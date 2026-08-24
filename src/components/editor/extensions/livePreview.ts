@@ -29,6 +29,7 @@ import {
     Transaction,
 } from "@codemirror/state";
 import katex from "katex";
+import { findInlineMathMatches } from "../../../utils/inlineMath";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveImageAssetUrl } from "../../../utils/vaultPaths";
 import {
@@ -1800,12 +1801,10 @@ function buildDecorationsImpl(
             }
 
             // Inline math: $...$ (not $$)
-            const mathRegex = /(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)/g;
-            let mathMatch;
-            while ((mathMatch = mathRegex.exec(text)) !== null) {
-                const start = line.from + mathMatch.index;
-                const end = start + mathMatch[0].length;
-                const tex = mathMatch[1];
+            for (const mathMatch of findInlineMathMatches(text)) {
+                const start = line.from + mathMatch.from;
+                const end = line.from + mathMatch.to;
+                const tex = mathMatch.tex;
                 decorations.push(
                     Decoration.replace({
                         widget: new InlineMathWidget(tex),

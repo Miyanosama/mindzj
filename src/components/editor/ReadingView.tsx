@@ -51,6 +51,7 @@ import { linkifyHtmlText, ensureScheme } from "../../utils/autoLink";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "../../i18n";
 import { getReadableMarkerTextColor, resolveMarkerColor } from "./markerColors";
+import { createInlineMathRegex } from "../../utils/inlineMath";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML renderer
@@ -533,7 +534,7 @@ function renderInline(text: string, ctx: RenderContext): string {
 
     // Inline math: $...$
     result = result.replace(
-        /(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)/g,
+        createInlineMathRegex(),
         (_, tex) => {
             try {
                 return katex.renderToString(unescapeHtml(tex).trim(), {
