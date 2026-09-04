@@ -1,7 +1,7 @@
 import { Component, For, Show, createSignal, createEffect, onMount, onCleanup } from "solid-js";
 import { invoke } from "@tauri-apps/api/core";
 import { confirmDialog, promptDialog } from "../common/ConfirmDialog";
-import type { VaultEntry } from "../../stores/vault";
+import type { FileMetadata, VaultEntry } from "../../stores/vault";
 import { vaultStore } from "../../stores/vault";
 import { editorStore } from "../../stores/editor";
 import { ContextMenu, type MenuItem } from "../common/ContextMenu";
@@ -1019,6 +1019,40 @@ export const FileTree: Component<FileTreeProps> = (props) => {
     const [menu, setMenu] = createSignal<{ show: boolean; x: number; y: number; items: MenuItem[] }>({
         show: false, x: 0, y: 0, items: [],
     });
+    const [fileProperties, setFileProperties] = createSignal<{
+        path: string;
+        metadata: FileMetadata;
+    } | null>(null);
+
+    const formatDateTime = (value: string) => {
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return value;
+        const pad = (part: number) => String(part).padStart(2, "0");
+        return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+
+    const formatFileSize = (bytes: number) => {
+        if (bytes < 1024) return `${bytes} B`;
+        const units = ["KB", "MB", "GB", "TB"];
+        let value = bytes / 1024;
+        let unit = 0;
+        while (value >= 1024 && unit < units.length - 1) {
+            value /= 1024;
+            unit += 1;
+        }
+        return `${value.toFixed(value >= 10 ? 1 : 2)} ${units[unit]} (${bytes} B)`;
+    };
+
+    async function showFileProperties(path: string) {
+        try {
+            const metadata = await invoke<FileMetadata>("get_file_metadata", {
+                relativePath: path,
+            });
+            setFileProperties({ path, metadata });
+        } catch (error) {
+            console.error("Failed to read file properties:", error);
+        }
+    }
 
     const sortMode = () => props.sortMode ?? "custom";
     const sortOrder = () => props.sortOrder ?? "asc";
@@ -1110,6 +1144,13 @@ export const FileTree: Component<FileTreeProps> = (props) => {
             action: () => renameEntry(path, isDir),
         });
         items.push({ label: t("context.showInExplorer"), icon: "\uD83D\uDCC2", action: () => showInExplorer(path) });
+        if (!isDir) {
+            items.push({
+                label: t("context.properties"),
+                icon: "ⓘ",
+                action: () => { void showFileProperties(path); },
+            });
+        }
         if (!isDir && props.onExportPdf && isMarkdownPath(path)) {
             items.push({
                 label: t("context.exportPdf"),
@@ -1214,6 +1255,60 @@ export const FileTree: Component<FileTreeProps> = (props) => {
                     x={menu().x} y={menu().y} items={menu().items}
                     onClose={() => setMenu((p) => ({ ...p, show: false }))}
                 />
+            </Show>
+            <Show when={fileProperties()}>
+                {(properties) => (
+                    <div
+                        role="presentation"
+                        onMouseDown={(event) => {
+                            if (event.target === event.currentTarget) setFileProperties(null);
+                        }}
+                        style={{
+                            position: "fixed",
+                            inset: "0",
+                            display: "flex",
+                            "align-items": "center",
+                            "justify-content": "center",
+                            background: "rgba(0, 0, 0, 0.45)",
+                            "z-index": "10020",
+                        }}
+                    >
+                        <div
+                            role="dialog"
+                            aria-modal="true"
+                            aria-label={t("fileProperties.title")}
+                            style={{
+                                width: "min(420px, calc(100vw - 32px))",
+                                background: "var(--mz-bg-secondary)",
+                                color: "var(--mz-text-primary)",
+                                border: "1px solid var(--mz-border-strong)",
+                                "border-radius": "var(--mz-radius-lg, 8px)",
+                                "box-shadow": "0 14px 44px rgba(0,0,0,0.38)",
+                                padding: "18px",
+                                "user-select": "text",
+                            }}
+                            onMouseDown={(event) => event.stopPropagation()}
+                        >
+                            <div style={{ display: "flex", "align-items": "center", gap: "10px", "margin-bottom": "16px" }}>
+                                <strong style={{ flex: "1", "font-size": "var(--mz-font-size-md)" }}>{t("fileProperties.title")}</strong>
+                                <button
+                                    onClick={() => setFileProperties(null)}
+                                    aria-label={t("common.close")}
+                                    style={{ border: "none", background: "transparent", color: "var(--mz-text-muted)", cursor: "pointer", "font-size": "18px" }}
+                                >×</button>
+                            </div>
+                            <div style={{ "margin-bottom": "14px", "font-weight": "600", "word-break": "break-all" }}>
+                                {properties().path.split("/").pop() ?? properties().path}
+                            </div>
+                            <div style={{ display: "grid", "grid-template-columns": "110px minmax(0, 1fr)", gap: "10px 14px", "font-size": "var(--mz-font-size-sm)" }}>
+                                <span style={{ color: "var(--mz-text-muted)" }}>{t("fileProperties.size")}</span>
+                                <span>{formatFileSize(properties().metadata.size)}</span>
+                                <span style={{ color: "var(--mz-text-muted)" }}>{t("fileProperties.created")}</span>
+                                <span>{formatDateTime(properties().metadata.created)}</span>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </Show>
         </div>
     );
@@ -1359,11 +1454,22 @@ const FileItem: Component<{
             onMouseEnter={(e) => { if (!props.isActive && !dragSource()) e.currentTarget.style.background = "var(--mz-bg-hover)"; }}
             onMouseLeave={(e) => { if (!props.isActive && !dragSource()) e.currentTarget.style.background = ""; }}
         >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ "flex-shrink": "0", "pointer-events": "none" }}>
-                <path d="M4 1.5h5.586a1 1 0 01.707.293l2.914 2.914a1 1 0 01.293.707V13.5a1 1 0 01-1 1H4a1 1 0 01-1-1v-11a1 1 0 011-1z"
-                    stroke={isMindZJ() ? "var(--mz-success)" : "var(--mz-accent)"} stroke-width="1" fill="none" />
-                <path d="M9.5 1.5V5h3.5" stroke={isMindZJ() ? "var(--mz-success)" : "var(--mz-accent)"} stroke-width="1" fill="none" />
-            </svg>
+            <Show
+                when={isMindZJ()}
+                fallback={
+                    <svg width="14" height="14" viewBox="0 0 16 16" fill="none" style={{ "flex-shrink": "0", "pointer-events": "none" }}>
+                        <path d="M4 1.5h5.586a1 1 0 01.707.293l2.914 2.914a1 1 0 01.293.707V13.5a1 1 0 01-1 1H4a1 1 0 01-1-1v-11a1 1 0 011-1z" stroke="var(--mz-accent)" stroke-width="1" fill="none" />
+                        <path d="M9.5 1.5V5h3.5" stroke="var(--mz-accent)" stroke-width="1" fill="none" />
+                    </svg>
+                }
+            >
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" style={{ "flex-shrink": "0", "pointer-events": "none" }}>
+                    <path d="M5 8h3M8 8V4.5M8 8v3.5M8 4.5h2M8 11.5h2" stroke="var(--mz-success)" stroke-width="1.2" stroke-linecap="round" />
+                    <rect x="1.5" y="6" width="3.5" height="4" rx="1" stroke="var(--mz-success)" stroke-width="1.2" />
+                    <rect x="10" y="2.5" width="4.5" height="4" rx="1" stroke="var(--mz-success)" stroke-width="1.2" />
+                    <rect x="10" y="9.5" width="4.5" height="4" rx="1" stroke="var(--mz-success)" stroke-width="1.2" />
+                </svg>
+            </Show>
             <Show when={renamingPath() === props.entry.relative_path}
                 fallback={
                     <>

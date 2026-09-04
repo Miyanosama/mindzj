@@ -1013,17 +1013,18 @@ const App: Component = () => {
     }
 
     function closeSplitPane(slot: PaneSlot) {
+        // Invalidate a split request that is still awaiting a file/plugin
+        // mount. Otherwise its late completion can recreate the pane that
+        // the user just closed.
+        splitOpenOperationId++;
         if (slot === "secondary") {
-            setSecondaryPanePath(null);
-            activatePane("primary");
+            commitPaneLayout(primaryPanePath(), null, "primary");
             return;
         }
 
         const secondary = secondaryPanePath();
         if (secondary) {
-            setPrimaryPanePath(secondary);
-            setSecondaryPanePath(null);
-            activatePane("primary");
+            commitPaneLayout(secondary, null, "primary");
         }
     }
 
@@ -1609,6 +1610,32 @@ const App: Component = () => {
             document.removeEventListener(
                 "mindzj:app-command",
                 handleAppCommand,
+            ),
+        );
+        // Plugin-backed editors publish their logical Markdown cursor and
+        // document text through this bridge. Keep the shared status bar in
+        // sync only for the plugin file that is currently active.
+        const handlePluginStatus = (event: Event) => {
+            const detail = (event as CustomEvent<{
+                path?: string;
+                content?: string;
+                line?: number;
+                column?: number;
+            }>).detail;
+            if (
+                !detail?.path ||
+                vaultStore.activeFile()?.path !== detail.path
+            )
+                return;
+            editorStore.updateStats(detail.content ?? "");
+            editorStore.setCursorLine(Math.max(1, detail.line ?? 1));
+            editorStore.setCursorCol(Math.max(1, detail.column ?? 1));
+        };
+        document.addEventListener("mindzj:plugin-status", handlePluginStatus);
+        onCleanup(() =>
+            document.removeEventListener(
+                "mindzj:plugin-status",
+                handlePluginStatus,
             ),
         );
         onCleanup(() => {
@@ -2861,6 +2888,16 @@ const App: Component = () => {
             // the mode-appropriate one and focus its input.
             const activePath =
                 activePanePath() ?? vaultStore.activeFile()?.path ?? null;
+            const activeExtension =
+                activePath?.split(".").pop()?.toLowerCase() ?? "";
+            if (activePath && hasPluginViewForExtension(activeExtension)) {
+                document.dispatchEvent(
+                    new CustomEvent("mindzj:plugin-find", {
+                        detail: { path: activePath },
+                    }),
+                );
+                return;
+            }
             const activeMode = editorStore.getViewModeForFile(activePath);
 
             // Find the DOM element that wraps ONLY the active pane's
@@ -3035,6 +3072,20 @@ const App: Component = () => {
             const readingPanel = (activeWrap ?? document).querySelector(
                 ".mz-reading-find-panel",
             );
+            const pluginPanel = (activeWrap ?? document).querySelector(
+                ".mz-plugin-search-panel",
+            );
+            if (pluginPanel) {
+                e.preventDefault();
+                e.stopPropagation();
+                e.stopImmediatePropagation();
+                document.dispatchEvent(
+                    new CustomEvent("mindzj:plugin-find-close", {
+                        detail: { path: activePanePath() },
+                    }),
+                );
+                return;
+            }
             if (readingPanel) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -3616,7 +3667,7 @@ const App: Component = () => {
                                     : "160px",
                                 "max-width": sidebarCollapsed()
                                     ? "0px"
-                                    : "600px",
+                                    : "none",
                                 background: "var(--mz-bg-secondary)",
                                 "border-right": sidebarCollapsed()
                                     ? "none"
@@ -4064,10 +4115,7 @@ const App: Component = () => {
                                     const onMove = (me: MouseEvent) => {
                                         const newW = Math.max(
                                             160,
-                                            Math.min(
-                                                600,
-                                                startW + me.clientX - startX,
-                                            ),
+                                            startW + me.clientX - startX,
                                         );
                                         setSidebarWidth(newW);
                                     };
@@ -5996,6 +6044,8 @@ const PluginViewHost: Component<{
     // pane's cleanup won't clobber that other pane.
     let currentPath: string | null = null;
     let currentHandle: string | null = null;
+    let mountGeneration = 0;
+    let disposed = false;
     const isMindzjInternalFile = () =>
         props.filePath.startsWith(".mindzj/") ||
         props.filePath.includes("/.mindzj/");
@@ -6009,9 +6059,13 @@ const PluginViewHost: Component<{
             async (path) => {
                 if (!containerRef || !path) return;
                 if (path !== currentPath) {
+                    const generation = ++mountGeneration;
                     // Destroy THIS pane's previous view (if any) — by handle,
                     // so a sibling pane showing the same file is unaffected.
-                    if (currentHandle) destroyPluginView(currentHandle);
+                    if (currentHandle) {
+                        destroyPluginView(currentHandle);
+                        currentHandle = null;
+                    }
                     // Clear container
                     containerRef.innerHTML = "";
                     currentPath = path;
@@ -6023,7 +6077,16 @@ const PluginViewHost: Component<{
                         props.content,
                         containerRef,
                     );
-                    if (mounted) currentHandle = mounted.handle;
+                    if (!mounted) return;
+                    // The host can disappear while the asynchronous plugin
+                    // lifecycle is still mounting. Dispose that late view
+                    // immediately instead of leaving an orphaned full-window
+                    // listener behind (the main cause of split-close hangs).
+                    if (disposed || generation !== mountGeneration) {
+                        destroyPluginView(mounted.handle);
+                        return;
+                    }
+                    currentHandle = mounted.handle;
                 }
             },
         ),
@@ -6036,6 +6099,8 @@ const PluginViewHost: Component<{
     });
 
     onCleanup(() => {
+        disposed = true;
+        mountGeneration++;
         if (currentHandle) destroyPluginView(currentHandle);
     });
 

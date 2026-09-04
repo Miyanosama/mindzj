@@ -271,22 +271,92 @@
     order: 1;
     background: var(--mz-canvas-bg, #ffffff);
 }
-.mz-md-ta {
+.mz-md-wrap {
     width: 100%;
     flex: 1;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+    background: var(--background-primary);
+    order: 1;
+}
+.mz-md-ta {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    width: 100%;
+    height: 100%;
     padding: 16px 24px;
     box-sizing: border-box;
     font-family: var(--font-monospace);
     font-size: 14px;
+    line-height: 1.5;
     color: var(--text-normal);
-    background: var(--background-primary);
+    caret-color: var(--text-normal);
+    background: transparent;
     border: none;
     outline: none;
     resize: none;
     overflow: auto;
     white-space: pre;
     tab-size: 4;
-    order: 1;
+}
+.mz-md-ta::selection {
+    color: var(--text-normal);
+    background: color-mix(in srgb, var(--interactive-accent) 48%, transparent);
+}
+.mz-md-ta.mz-md-outline-line-active {
+    background-image: linear-gradient(
+        rgba(80, 140, 255, 0.28),
+        rgba(80, 140, 255, 0.28)
+    );
+    background-image: linear-gradient(
+        color-mix(in srgb, var(--interactive-accent) 28%, transparent),
+        color-mix(in srgb, var(--interactive-accent) 28%, transparent)
+    );
+    background-repeat: no-repeat;
+    background-position: 0 var(--mz-md-outline-line-top, -100px);
+    background-size: 100% var(--mz-md-outline-line-height, 21px);
+}
+.mz-md-highlight {
+    position: absolute;
+    inset: 0;
+    z-index: 1;
+    overflow: hidden;
+    pointer-events: none;
+}
+.mz-md-highlight-content {
+    position: relative;
+    z-index: 1;
+    width: max-content;
+    min-width: 100%;
+    min-height: 100%;
+    margin: 0;
+    padding: 16px 24px;
+    box-sizing: border-box;
+    border: none;
+    white-space: pre;
+    tab-size: 4;
+    font-family: var(--font-monospace);
+    font-size: 14px;
+    font-weight: normal;
+    font-style: normal;
+    line-height: 1.5;
+    color: transparent;
+    background: transparent;
+    transform-origin: top left;
+}
+.mz-md-highlight-mark {
+    padding: 0;
+    border-radius: 2px;
+    color: transparent;
+}
+.mz-md-highlight-search {
+    background: rgba(255, 199, 45, 0.58);
+}
+.mz-md-highlight-search-current {
+    background: rgba(255, 132, 35, 0.9);
+    box-shadow: 0 0 0 1px rgba(255, 132, 35, 0.95);
 }
 .mz-tb-sep {
     width: 1px;
@@ -471,6 +541,145 @@
     color: var(--text-muted);
     min-width: 28px;
     text-align: center;
+}
+.mz-node-outline-reveal {
+    animation: mz-node-outline-reveal 1.4s ease-out;
+}
+@keyframes mz-node-outline-reveal {
+    0%, 35% {
+        box-shadow: 0 0 0 4px color-mix(in srgb, var(--interactive-accent) 65%, transparent);
+    }
+    100% {
+        box-shadow: 0 0 0 9px transparent;
+    }
+}
+.mz-node-search-result {
+    box-shadow: 0 0 0 2px rgba(255, 190, 45, 0.55);
+}
+.mz-node-search-match {
+    padding: 0;
+    border-radius: 2px;
+    background: rgba(255, 199, 45, 0.55);
+    color: inherit;
+}
+.mz-node-search-match-current {
+    background: #ff9632;
+    color: #181818;
+}
+.mz-plugin-search-panel {
+    position: absolute;
+    top: 50px;
+    right: 8px;
+    z-index: 150;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 420px;
+    max-width: min(520px, calc(100% - 16px));
+    padding: 5px 6px;
+    box-sizing: border-box;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+    font-family: var(--font-interface);
+    font-size: 12px;
+}
+.mz-plugin-search-row {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    min-height: 26px;
+}
+.mz-plugin-search-replace-row {
+    display: none;
+}
+.mz-plugin-search-expanded .mz-plugin-search-replace-row {
+    display: flex;
+}
+.mz-plugin-search-expand {
+    transform: rotate(0deg);
+    transition: transform 120ms ease;
+}
+.mz-plugin-search-expanded .mz-plugin-search-expand {
+    transform: rotate(90deg);
+}
+.mz-plugin-search-input {
+    flex: 1;
+    min-width: 0;
+    height: 24px;
+    padding: 2px 8px;
+    box-sizing: border-box;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    outline: none;
+    font: inherit;
+}
+.mz-plugin-search-input:focus {
+    border-color: var(--interactive-accent);
+    box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+.mz-plugin-search-btn,
+.mz-plugin-search-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font: 600 11px var(--font-interface);
+}
+.mz-plugin-search-btn:hover,
+.mz-plugin-search-toggle:hover {
+    color: var(--text-normal);
+    background: var(--background-modifier-hover);
+}
+.mz-plugin-search-toggle:has(input:checked) {
+    color: var(--text-accent);
+    border-color: var(--interactive-accent);
+    background: var(--background-modifier-hover);
+}
+.mz-plugin-search-toggle input {
+    position: absolute;
+    width: 0;
+    height: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+.mz-plugin-search-count {
+    min-width: 64px;
+    max-width: 90px;
+    padding: 0 4px;
+    color: var(--text-muted);
+    text-align: center;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-variant-numeric: tabular-nums;
+}
+.mz-plugin-search-spacer {
+    width: 22px;
+    height: 22px;
+    flex-shrink: 0;
+}
+@media (max-width: 560px) {
+    .mz-plugin-search-panel {
+        min-width: 0;
+        left: 8px;
+    }
+    .mz-plugin-search-count,
+    .mz-plugin-search-row .mz-plugin-search-toggle:nth-of-type(2) {
+        display: none;
+    }
 }
 .mz-ctx-menu {
     position: fixed;
@@ -763,6 +972,10 @@
     min-height: 24px;
 }
 .mz-outline-row:hover {
+    background: var(--background-modifier-hover);
+}
+.mz-outline-row-active {
+    color: var(--text-accent);
     background: var(--background-modifier-hover);
 }
 .mz-outline-toggle {

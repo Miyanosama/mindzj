@@ -1187,6 +1187,11 @@ function setActivePluginView(handle: string, notify: boolean): any | null {
             view.markActive();
         } catch {}
     }
+    if (typeof view.notifyStatus === "function") {
+        try {
+            view.notifyStatus();
+        } catch {}
+    }
 
     if (notify) {
         const detail = {

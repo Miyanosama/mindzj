@@ -195,7 +195,7 @@ var CONNECTION_STYLES = [
   "loose"
 ];
 var DEFAULT_KEYBINDINGS = {
-  editNode: "Space",
+  editNode: "ctrl+Enter",
   addSibling: "Enter",
   addChild: "Tab",
   focusNode: "f",
@@ -370,11 +370,12 @@ var _en = {
   "tb.focus": "Focus",
   "tb.search": "Search",
   "tb.settings": "\u2699\uFE0F",
-  "tb.help": "Ctrl+F:Search | Space:Edit | Ctrl+C/V/X",
+  "tb.help": "Ctrl+F:Search | Ctrl+Enter:Edit | Space:Pan | Ctrl+C/V/X",
   "tb.newRoot": "New root",
   "tb.tipUndo": "Ctrl+Z",
   "tb.tipRedo": "Ctrl+Shift+Z",
   "tb.tipMd": "Markdown mode",
+  "tb.tipMap": "Map mode",
   "tb.tipStyle": "Style panel",
   "tb.tipFocus": "Focus node",
   "tb.tipSearch": "Search nodes",
@@ -521,11 +522,12 @@ var _zh = {
   "tb.focus": "\u5B9A\u4F4D",
   "tb.search": "\u641C\u7D22",
   "tb.settings": "\u2699\uFE0F",
-  "tb.help": "Ctrl+F:\u641C\u7D22 | Space:\u7F16\u8F91 | Ctrl+C/V/X",
+  "tb.help": "Ctrl+F:\u641C\u7D22 | Ctrl+Enter:\u7F16\u8F91 | Space:\u79FB\u52A8\u753B\u5E03 | Ctrl+C/V/X",
   "tb.newRoot": "\u65B0\u5EFA\u4E3B\u8282\u70B9",
   "tb.tipUndo": "Ctrl+Z",
   "tb.tipRedo": "Ctrl+Shift+Z",
   "tb.tipMd": "Markdown\u6A21\u5F0F",
+  "tb.tipMap": "\u5BFC\u56FE\u6A21\u5F0F",
   "tb.tipStyle": "\u6837\u5F0F\u9762\u677F",
   "tb.tipFocus": "\u5B9A\u4F4D\u8282\u70B9",
   "tb.tipSearch": "\u641C\u7D22\u8282\u70B9",
@@ -3486,6 +3488,29 @@ var _MindMapView = class extends import_obsidian.TextFileView {
         this.zoomTo(1);
         return;
       }
+      // Space is reserved for the canvas hand tool while no node editor is
+      // active. Older saved settings used Space for both commands, so handle
+      // panning before the configurable edit shortcut as well.
+      if (e.code === "Space" || this.matchKey(e, this.kb.dragCanvas)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        if (!this.spaceDown) {
+          this.spaceDown = true;
+          if (this.cc)
+            this.cc.toggleClass("mz-cursor-grab", true);
+        }
+        return;
+      }
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (this.selId) {
+          this.editId = this.selId;
+          this.render();
+        }
+        return;
+      }
       const plainTabForChild = String(this.kb.addChild || "Tab").toLowerCase() === "tab" && (e.key === "Tab" || e.code === "Tab") && !e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey;
       if (plainTabForChild || this.matchKey(e, this.kb.addChild)) {
         e.preventDefault();
@@ -3515,28 +3540,11 @@ var _MindMapView = class extends import_obsidian.TextFileView {
           this.addSibling();
         return;
       }
-      if (this.matchKey(e, this.kb.editNode) && !e.repeat && this.selId && !this.isMulti()) {
+      if (this.matchKey(e, this.kb.editNode) && e.code !== "Space" && !e.repeat && this.selId && !this.isMulti()) {
         e.preventDefault();
         e.stopPropagation();
         this.editId = this.selId;
         this.render();
-        return;
-      }
-      if (this.matchKey(e, this.kb.dragCanvas) && !e.repeat) {
-        e.preventDefault();
-        e.stopPropagation();
-        this.spaceDown = true;
-        if (this.cc)
-          this.cc.toggleClass("mz-cursor-grab", true);
-        return;
-      }
-      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (this.selId) {
-          this.editId = this.selId;
-          this.render();
-        }
         return;
       }
       if (this.matchKey(e, this.kb.focusNode) && !e.ctrlKey && !e.metaKey) {
@@ -3549,8 +3557,8 @@ var _MindMapView = class extends import_obsidian.TextFileView {
         e.preventDefault();
         e.stopPropagation();
         if (this.searchBar) {
-          this.searchBar.remove();
-          this.searchBar = null;
+          this.closeSearch();
+          return;
         } else {
           this.clrSel();
           this.closePop();
@@ -3602,7 +3610,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     };
     // FIX #1: keep grab cursor during drag, don't reset to pointer
     this._ku = (e) => {
-      if (e.code === "Space" || this.matchKey(e, this.kb.editNode) || this.matchKey(e, this.kb.dragCanvas)) {
+      if (e.code === "Space" || this.matchKey(e, this.kb.dragCanvas)) {
         this.spaceDown = false;
         this.dragCv = false;
         if (this.cc) {
@@ -3723,11 +3731,20 @@ var _MindMapView = class extends import_obsidian.TextFileView {
   }
   /** Notify the custom outline panel to re-read the node tree. */
   updateOutlineHeadings() {
-    this.plugin.refreshOutline();
+    const event = new CustomEvent("mindzj:outline-refresh", {
+      cancelable: true,
+      detail: {
+        path: this.file?.path,
+        mode: this.mdMode ? "markdown" : "map"
+      }
+    });
+    const handledByHost = !document.dispatchEvent(event);
+    if (!handledByHost)
+      this.plugin.refreshOutline();
   }
   /** Refresh outline when the view is closing (will show empty). */
   clearOutlineHeadings() {
-    setTimeout(() => this.plugin.refreshOutline(), 50);
+    setTimeout(() => this.updateOutlineHeadings(), 50);
   }
   mkRoot(txt) {
     return {
@@ -3782,6 +3799,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       else
         this.fitAll();
     }
+    this.notifyStatus();
   }
   clear() {
     this.roots = [];
@@ -3792,6 +3810,79 @@ var _MindMapView = class extends import_obsidian.TextFileView {
   doSave() {
     this.requestSave();
     this.updateOutlineHeadings();
+    this.notifyStatus();
+  }
+  nodeMarkdownPosition(targetId) {
+    let line = 1;
+    let result = null;
+    const visitRight = (nd, depth, sibIdx) => {
+      let prefix;
+      if (depth === 1)
+        prefix = "## ";
+      else if (depth === 2)
+        prefix = "### ";
+      else if (depth === 3)
+        prefix = "##### ";
+      else if (depth === 4)
+        prefix = "\t" + (sibIdx + 1) + ". ";
+      else
+        prefix = "\t".repeat(depth - 3) + "- ";
+      if (nd.id === targetId)
+        result = { line, column: prefix.length + 1 };
+      line++;
+      for (let i = 0; i < nd.children.length; i++)
+        visitRight(nd.children[i], depth + 1, i);
+    };
+    const visitLeft = (nd, depth) => {
+      const prefix = "\t".repeat(depth - 1) + "/ ";
+      if (nd.id === targetId)
+        result = { line, column: prefix.length + 1 };
+      line++;
+      for (const child of nd.children)
+        visitLeft(child, depth + 1);
+    };
+    for (let rootIndex = 0; rootIndex < this.roots.length; rootIndex++) {
+      const root = this.roots[rootIndex];
+      if (root.id === targetId)
+        result = { line, column: 3 };
+      line++;
+      const rightChildren = root.children.filter((child) => child.side !== "left");
+      const leftChildren = root.children.filter((child) => child.side === "left");
+      for (let i = 0; i < rightChildren.length; i++)
+        visitRight(rightChildren[i], 1, i);
+      for (const child of leftChildren)
+        visitLeft(child, 1);
+      if (rootIndex < this.roots.length - 1)
+        line++;
+    }
+    return result || { line: 1, column: 1 };
+  }
+  notifyStatus() {
+    var _a;
+    const path = (_a = this.file) == null ? void 0 : _a.path;
+    if (!path)
+      return;
+    const content = this.mdMode && this.mdCt ? this.mdCt.value : this.roots2md();
+    let position;
+    if (this.mdMode && this.mdCt) {
+      const offset = Math.max(0, this.mdCt.selectionStart || 0);
+      const before = content.slice(0, offset);
+      const lastBreak = before.lastIndexOf("\n");
+      position = {
+        line: before.split("\n").length,
+        column: offset - lastBreak
+      };
+    } else {
+      position = this.nodeMarkdownPosition(this.selId);
+    }
+    document.dispatchEvent(new CustomEvent("mindzj:plugin-status", {
+      detail: {
+        path,
+        content,
+        line: position.line,
+        column: position.column
+      }
+    }));
   }
   fitAll() {
     if (!this.cc || !this.roots.length)
@@ -3850,6 +3941,58 @@ var _MindMapView = class extends import_obsidian.TextFileView {
   getRoots() {
     return this.roots;
   }
+  getMarkdownHeadings() {
+    if (!this.mdCt)
+      return [];
+    const headings = [];
+    const lines = this.mdCt.value.split("\n");
+    for (let line = 0; line < lines.length; line++) {
+      const match = lines[line].match(/^(#{1,6})\s+(.+?)\s*$/);
+      if (match)
+        headings.push({
+          heading: match[2],
+          level: match[1].length,
+          position: { start: { line } }
+        });
+    }
+    return headings;
+  }
+  focusMarkdownLine(line) {
+    if (!this.mdMode || !this.mdCt)
+      return;
+    const lines = this.mdCt.value.split("\n");
+    const target = Math.max(0, Math.min(lines.length - 1, line));
+    let offset = 0;
+    for (let index = 0; index < target; index++)
+      offset += lines[index].length + 1;
+    const lineStart = offset;
+    const lineEnd = lineStart + lines[target].length;
+    const marker = lines[target].match(/^#{1,6}\s+/);
+    const caret = lineStart + (marker ? marker[0].length : 0);
+    this.mdOutlineHighlight = {
+      from: lineStart,
+      to: lineEnd,
+      line: target
+    };
+    if (this.mdOutlineHighlightTimer)
+      clearTimeout(this.mdOutlineHighlightTimer);
+    this.mdOutlineHighlightTimer = setTimeout(() => {
+      this.mdOutlineHighlight = null;
+      this.mdOutlineHighlightTimer = null;
+      this.renderMdHighlights();
+    }, 2e3);
+    this.renderMdHighlights();
+    this.mdCt.focus();
+    this.mdCt.setSelectionRange(caret, caret);
+    const lineHeight = parseFloat(getComputedStyle(this.mdCt).lineHeight) || 20;
+    this.mdCt.scrollTop = Math.max(0, (target - 2) * lineHeight);
+    this.syncMdHighlightScroll();
+    this.notifyStatus();
+  }
+  setEphemeralState(state) {
+    if (this.mdMode && state && state.line !== void 0)
+      this.focusMarkdownLine(state.line);
+  }
   /** Select a node by id and pan the canvas to center it. */
   selectAndFocusNode(id) {
     const nd = this.fAll(id);
@@ -3858,8 +4001,18 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     if (this.commitEdit)
       this.commitEdit();
     this.sel1(id);
+    this.revealNodeId = id;
+    if (this.revealNodeTimer)
+      clearTimeout(this.revealNodeTimer);
+    this.revealNodeTimer = setTimeout(() => {
+      this.revealNodeId = null;
+      this.revealNodeTimer = null;
+      if (this.uiOk && !this.mdMode)
+        this.render();
+    }, 2e3);
     this.focusNode(nd);
     this.render();
+    this.notifyStatus();
   }
   // eslint-disable-next-line @typescript-eslint/require-await
   async onOpen() {
@@ -3903,12 +4056,24 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       "g"
     );
     this.gEl.appendChild(this.overlayG);
-    this.mdCt = ct.createEl("textarea");
+    this.mdWrap = ct.createEl("div");
+    this.mdWrap.addClass("mz-md-wrap", "mz-hidden");
+    this.mdHighlight = this.mdWrap.createEl("div");
+    this.mdHighlight.addClass("mz-md-highlight");
+    this.mdHighlightContent = this.mdHighlight.createEl("pre");
+    this.mdHighlightContent.addClass("mz-md-highlight-content");
+    this.mdCt = this.mdWrap.createEl("textarea");
     this.mdCt.addClass("mz-md-ta");
-    this.mdCt.addClass("mz-hidden");
     this.mdCt.addEventListener("input", () => {
       if (!this.mdMode)
         return;
+      if (this.mdOutlineHighlightTimer) {
+        clearTimeout(this.mdOutlineHighlightTimer);
+        this.mdOutlineHighlightTimer = null;
+      }
+      this.mdOutlineHighlight = null;
+      this.renderMdHighlights();
+      this.notifyStatus();
       if (this.mdOutlineTimer)
         clearTimeout(this.mdOutlineTimer);
       this.mdOutlineTimer = setTimeout(
@@ -3916,6 +4081,28 @@ var _MindMapView = class extends import_obsidian.TextFileView {
         300
       );
     });
+    this.mdCt.addEventListener("scroll", () => this.syncMdHighlightScroll());
+    for (const eventName of ["click", "keyup", "select"])
+      this.mdCt.addEventListener(eventName, () => this.notifyStatus());
+    this._findRequest = (event) => {
+      var _a;
+      const requestedPath = (_a = event.detail) == null ? void 0 : _a.path;
+      if (requestedPath && requestedPath !== this.file?.path)
+        return;
+      if (!this.isAct())
+        return;
+      this.toggleSearch(true);
+    };
+    this._closeFindRequest = (event) => {
+      var _a;
+      const requestedPath = (_a = event.detail) == null ? void 0 : _a.path;
+      if (requestedPath && requestedPath !== this.file?.path)
+        return;
+      if (this.isAct())
+        this.closeSearch();
+    };
+    document.addEventListener("mindzj:plugin-find", this._findRequest);
+    document.addEventListener("mindzj:plugin-find-close", this._closeFindRequest);
     this.bindEvts();
     window.addEventListener("keydown", this._kd, true);
     document.addEventListener("keydown", this._kd, true);
@@ -3951,10 +4138,22 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       this.cc.removeEventListener("keydown", this._kd, true);
     window.removeEventListener("keyup", this._ku, true);
     window.removeEventListener("mouseup", this._mu, true);
+    if (this._findRequest)
+      document.removeEventListener("mindzj:plugin-find", this._findRequest);
+    if (this._closeFindRequest)
+      document.removeEventListener("mindzj:plugin-find-close", this._closeFindRequest);
+    if (this.searchBar) {
+      this.searchBar.remove();
+      this.searchBar = null;
+    }
     if (_MindMapView.activeInstance === this)
       _MindMapView.activeInstance = null;
     if (this.animId)
       cancelAnimationFrame(this.animId);
+    if (this.revealNodeTimer)
+      clearTimeout(this.revealNodeTimer);
+    if (this.mdOutlineHighlightTimer)
+      clearTimeout(this.mdOutlineHighlightTimer);
   }
   applyCanvasBg() {
     if (this.svgCt)
@@ -3984,10 +4183,12 @@ var _MindMapView = class extends import_obsidian.TextFileView {
   clrSel() {
     this.selId = null;
     this.multiSel.clear();
+    this.notifyStatus();
   }
   sel1(id) {
     this.multiSel.clear();
     this.selId = id;
+    this.notifyStatus();
   }
   togSel(id) {
     if (this.multiSel.has(id)) {
@@ -4000,6 +4201,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       this.multiSel.add(id);
       this.selId = id;
     }
+    this.notifyStatus();
   }
   allSel() {
     const s = new Set(this.multiSel);
@@ -4111,7 +4313,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     btn("+", t("tb.zoomIn"), () => this.zoomBy(1.1));
     const h = tb.createEl("span");
     h.addClass("mz-tb-help");
-    h.innerText = t("tb.help");
+    h.innerText = "Ctrl+F:" + t("tb.search") + " | Ctrl+Enter:" + t("set.key.edit") + " | Space:" + t("set.key.dragCanvas") + " | Ctrl+C/V/X";
   }
   focusSel() {
     let nd = null;
@@ -4125,10 +4327,24 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     }
   }
   toggleMd() {
+    if (this.searchBar)
+      this.closeSearch();
+    if (this.mdOutlineHighlightTimer) {
+      clearTimeout(this.mdOutlineHighlightTimer);
+      this.mdOutlineHighlightTimer = null;
+    }
+    this.mdOutlineHighlight = null;
+    if (this.mdCt) {
+      this.mdCt.removeClass("mz-md-outline-line-active");
+      this.mdCt.style.removeProperty("--mz-md-outline-line-top");
+      this.mdCt.style.removeProperty("--mz-md-outline-line-height");
+    }
     if (this.mdMode) {
       this.mdMode = false;
-      if (this.mdBtn)
+      if (this.mdBtn) {
         this.mdBtn.innerText = t("tb.md");
+        this.mdBtn.title = t("tb.tipMd");
+      }
       const newMd = this.mdCt.value;
       const oldMd = this.mdSnapshot ? this.roots2mdFromSnap() : null;
       if (oldMd && newMd === oldMd) {
@@ -4136,7 +4352,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
         this.parseMd(newMd);
       }
       this.mdSnapshot = null;
-      this.mdCt.toggleClass("mz-hidden", true);
+      this.mdWrap.toggleClass("mz-hidden", true);
       this.svgCt.toggleClass("mz-hidden", false);
       for (const r of this.roots)
         this.doLayout(r);
@@ -4146,13 +4362,20 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       if (this.commitEdit)
         this.commitEdit();
       this.mdMode = true;
-      if (this.mdBtn)
+      if (this.mdBtn) {
         this.mdBtn.innerText = t("tb.map");
+        this.mdBtn.title = t("tb.tipMap");
+      }
       this.mdSnapshot = JSON.stringify(this.roots);
       this.svgCt.toggleClass("mz-hidden", true);
-      this.mdCt.toggleClass("mz-hidden", false);
+      this.mdWrap.toggleClass("mz-hidden", false);
       this.mdCt.value = this.roots2md();
+      this.renderMdHighlights();
       this.updateOutlineHeadings();
+      requestAnimationFrame(() => {
+        this.mdCt.focus();
+        this.notifyStatus();
+      });
     }
   }
   roots2mdFromSnap() {
@@ -4248,6 +4471,75 @@ var _MindMapView = class extends import_obsidian.TextFileView {
   }
   renderMd() {
     this.mdCt.value = this.roots2md();
+    this.renderMdHighlights();
+  }
+  syncMdHighlightScroll() {
+    if (!this.mdHighlightContent || !this.mdCt)
+      return;
+    this.mdHighlightContent.style.transform = "translate(" + -this.mdCt.scrollLeft + "px," + -this.mdCt.scrollTop + "px)";
+    if (!this.mdOutlineHighlight || !Number.isFinite(this.mdOutlineHighlight.line)) {
+      this.mdCt.removeClass("mz-md-outline-line-active");
+      this.mdCt.style.removeProperty("--mz-md-outline-line-top");
+      this.mdCt.style.removeProperty("--mz-md-outline-line-height");
+      return;
+    }
+    const computed = getComputedStyle(this.mdCt);
+    const lineHeight = parseFloat(computed.lineHeight) || 20;
+    const paddingTop = parseFloat(computed.paddingTop) || 0;
+    const highlightTop = paddingTop + this.mdOutlineHighlight.line * lineHeight - this.mdCt.scrollTop;
+    this.mdCt.addClass("mz-md-outline-line-active");
+    this.mdCt.style.setProperty("--mz-md-outline-line-top", highlightTop + "px");
+    this.mdCt.style.setProperty("--mz-md-outline-line-height", lineHeight + "px");
+  }
+  renderMdHighlights() {
+    if (!this.mdHighlightContent || !this.mdCt)
+      return;
+    const content = this.mdCt.value;
+    const ranges = [];
+    for (let index = 0; index < this.searchResults.length; index++) {
+      const result = this.searchResults[index];
+      if (result.kind !== "markdown" || result.to <= result.from)
+        continue;
+      ranges.push({
+        from: result.from,
+        to: result.to,
+        kind: index === this.searchIdx ? "search-current" : "search"
+      });
+    }
+    this.mdHighlightContent.empty();
+    if (!ranges.length) {
+      this.mdHighlightContent.textContent = content;
+      this.syncMdHighlightScroll();
+      return;
+    }
+    const boundaries = new Set([0, content.length]);
+    for (const range of ranges) {
+      boundaries.add(Math.max(0, Math.min(content.length, range.from)));
+      boundaries.add(Math.max(0, Math.min(content.length, range.to)));
+    }
+    const sorted = [...boundaries].sort((a, b) => a - b);
+    const priority = { "search-current": 2, search: 1 };
+    for (let index = 0; index < sorted.length - 1; index++) {
+      const from = sorted[index];
+      const to = sorted[index + 1];
+      if (to <= from)
+        continue;
+      let active = null;
+      for (const range of ranges) {
+        if (range.from <= from && range.to >= to && (!active || priority[range.kind] > priority[active.kind]))
+          active = range;
+      }
+      const text = content.slice(from, to);
+      if (!active) {
+        this.mdHighlightContent.appendChild(document.createTextNode(text));
+        continue;
+      }
+      const mark = document.createElement("mark");
+      mark.addClass("mz-md-highlight-mark", "mz-md-highlight-" + active.kind);
+      mark.textContent = text;
+      this.mdHighlightContent.appendChild(mark);
+    }
+    this.syncMdHighlightScroll();
   }
   parseMd(text) {
     const lines = text.split("\n").filter((l) => l.trim());
@@ -5182,94 +5474,395 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     document.body.appendChild(ov);
     document.body.appendChild(m);
   }
-  toggleSearch() {
-    var _a;
+  toggleSearch(forceOpen = false) {
     if (this.searchBar) {
-      this.searchBar.remove();
-      this.searchBar = null;
-      (_a = this.cc) == null ? void 0 : _a.focus({ preventScroll: true });
-      this.ensureProxy();
-      return;
-    }
-    this.searchBar = document.createElement("div");
-    this.searchBar.addClass("mz-search-bar");
-    const inp = document.createElement("input");
-    inp.type = "text";
-    inp.placeholder = t("search.placeholder");
-    inp.addClass("mz-search-input");
-    const info = document.createElement("span");
-    info.addClass("mz-search-count");
-    const closeBtn = document.createElement("button");
-    closeBtn.innerText = "\u2715";
-    closeBtn.addClass("mz-search-btn");
-    closeBtn.addEventListener("click", () => {
-      var _a2, _b;
-      (_a2 = this.searchBar) == null ? void 0 : _a2.remove();
-      this.searchBar = null;
-      (_b = this.cc) == null ? void 0 : _b.focus({ preventScroll: true });
-      this.ensureProxy();
-    });
-    this.searchBar.appendChild(inp);
-    this.searchBar.appendChild(info);
-    this.searchBar.appendChild(closeBtn);
-    this.svgCt.appendChild(this.searchBar);
-    const doSearch = () => {
-      const q = inp.value.trim().toLowerCase();
-      this.searchResults = [];
-      this.searchIdx = 0;
-      if (!q) {
-        info.textContent = "";
+      const existingInput = this.searchBar.querySelector(".mz-plugin-find-input");
+      if (forceOpen) {
+        existingInput == null ? void 0 : existingInput.focus();
+        existingInput == null ? void 0 : existingInput.select();
         return;
       }
-      const vis = (n) => {
-        if (n.text.toLowerCase().includes(q))
-          this.searchResults.push(n);
-        for (const c of n.children)
-          vis(c);
-      };
-      for (const r of this.roots)
-        vis(r);
-      if (this.searchResults.length) {
-        info.textContent = "1/" + this.searchResults.length;
-        this.sel1(this.searchResults[0].id);
-        this.focusNode(this.searchResults[0]);
-        this.render();
-      } else
-        info.textContent = "0";
+      this.closeSearch();
+      return;
+    }
+    const makeButton = (label, title, className = "") => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.innerText = label;
+      button.title = title;
+      button.addClass("mz-plugin-search-btn");
+      if (className)
+        button.addClass(className);
+      return button;
     };
-    inp.addEventListener("input", doSearch);
-    inp.addEventListener(
-      "keydown",
-      (e) => {
-        var _a2, _b;
-        e.stopPropagation();
-        e.stopImmediatePropagation();
-        if (e.key === "Enter") {
-          e.preventDefault();
-          if (!this.searchResults.length)
-            return;
-          if (e.shiftKey)
-            this.searchIdx = (this.searchIdx - 1 + this.searchResults.length) % this.searchResults.length;
-          else
-            this.searchIdx = (this.searchIdx + 1) % this.searchResults.length;
-          info.textContent = this.searchIdx + 1 + "/" + this.searchResults.length;
-          const nd = this.searchResults[this.searchIdx];
-          this.sel1(nd.id);
-          this.focusNode(nd);
-          this.render();
-          requestAnimationFrame(() => inp.focus());
+    const makeToggle = (label, title) => {
+      const wrapper = document.createElement("label");
+      wrapper.addClass("mz-plugin-search-toggle");
+      wrapper.title = title;
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      const text = document.createElement("span");
+      text.innerText = label;
+      wrapper.appendChild(checkbox);
+      wrapper.appendChild(text);
+      return { wrapper, checkbox };
+    };
+    const panel = document.createElement("div");
+    panel.addClass("mz-plugin-search-panel");
+    panel.setAttribute("role", "search");
+    this.searchBar = panel;
+    let replacementUndoDepth = 0;
+    let replacementRedoDepth = 0;
+    const findRow = document.createElement("div");
+    findRow.addClass("mz-plugin-search-row");
+    const expandBtn = makeButton("›", "Toggle Replace", "mz-plugin-search-expand");
+    const inp = document.createElement("input");
+    inp.type = "text";
+    inp.placeholder = "Find";
+    inp.autocomplete = "off";
+    inp.addClass("mz-plugin-search-input", "mz-plugin-find-input");
+    const caseToggle = makeToggle("Aa", "Match Case");
+    const wordToggle = makeToggle("ab", "Match Whole Word");
+    const regexToggle = makeToggle(".*", "Use Regular Expression");
+    const info = document.createElement("span");
+    info.addClass("mz-plugin-search-count");
+    const prevBtn = makeButton("↑", "Previous Match (Shift+Enter)");
+    const nextBtn = makeButton("↓", "Next Match (Enter)");
+    const selectBtn = makeButton("≡", "Select all matches");
+    const closeBtn = makeButton("×", "Close (Escape)");
+    for (const element of [
+      expandBtn,
+      inp,
+      caseToggle.wrapper,
+      wordToggle.wrapper,
+      regexToggle.wrapper,
+      info,
+      prevBtn,
+      nextBtn,
+      selectBtn,
+      closeBtn
+    ])
+      findRow.appendChild(element);
+    const replaceRow = document.createElement("div");
+    replaceRow.addClass("mz-plugin-search-row", "mz-plugin-search-replace-row");
+    const replaceSpacer = document.createElement("span");
+    replaceSpacer.addClass("mz-plugin-search-spacer");
+    const replaceInput = document.createElement("input");
+    replaceInput.type = "text";
+    replaceInput.placeholder = "Replace";
+    replaceInput.autocomplete = "off";
+    replaceInput.addClass("mz-plugin-search-input");
+    const preserveToggle = makeToggle("AB", "Preserve Case");
+    const replaceBtn = makeButton("↻", "Replace (Enter)");
+    const replaceAllBtn = makeButton("↻*", "Replace All (Shift+Enter)");
+    for (const element of [
+      replaceSpacer,
+      replaceInput,
+      preserveToggle.wrapper,
+      replaceBtn,
+      replaceAllBtn
+    ])
+      replaceRow.appendChild(element);
+    panel.appendChild(findRow);
+    panel.appendChild(replaceRow);
+    const viewContent = this.containerEl.children[1];
+    viewContent.appendChild(panel);
+    const regexForQuery = () => {
+      if (!inp.value)
+        return null;
+      let source = inp.value;
+      if (!regexToggle.checkbox.checked)
+        source = source.replace(/[.*+?^()|[\]\\{}$]/g, "\\$&");
+      if (wordToggle.checkbox.checked)
+        source = "\\b(?:" + source + ")\\b";
+      try {
+        return new RegExp(source, "g" + (caseToggle.checkbox.checked ? "" : "i"));
+      } catch (e) {
+        return void 0;
+      }
+    };
+    const addMatches = (text, payload) => {
+      const regex = regexForQuery();
+      if (!regex)
+        return;
+      let match;
+      while ((match = regex.exec(text)) !== null) {
+        this.searchResults.push({
+          ...payload,
+          from: match.index,
+          to: match.index + match[0].length,
+          matched: match[0]
+        });
+        if (match[0].length === 0)
+          regex.lastIndex++;
+      }
+    };
+    const updateCount = () => {
+      if (!inp.value)
+        info.textContent = "";
+      else if (!this.searchResults.length)
+        info.textContent = "No results";
+      else
+        info.textContent = this.searchIdx + 1 + " of " + this.searchResults.length;
+      if (this.mdMode)
+        this.renderMdHighlights();
+    };
+    const applyResult = (index) => {
+      if (!this.searchResults.length) {
+        updateCount();
+        return;
+      }
+      this.searchIdx = (index + this.searchResults.length) % this.searchResults.length;
+      const result = this.searchResults[this.searchIdx];
+      if (result.kind === "markdown") {
+        this.mdCt.focus();
+        this.mdCt.setSelectionRange(result.from, result.to);
+        const before = this.mdCt.value.slice(0, result.from);
+        const line = before.split("\n").length;
+        const lineHeight = parseFloat(getComputedStyle(this.mdCt).lineHeight) || 20;
+        this.mdCt.scrollTop = Math.max(0, (line - 3) * lineHeight);
+        this.notifyStatus();
+      } else {
+        this.sel1(result.node.id);
+        this.focusNode(result.node);
+        this.render();
+      }
+      updateCount();
+      requestAnimationFrame(() => inp.focus());
+    };
+    const doSearch = (keepIndex = false) => {
+      const previous = this.searchIdx;
+      this.searchResults = [];
+      if (regexForQuery() === void 0) {
+        info.textContent = "Invalid expression";
+        this.renderMdHighlights();
+        return;
+      }
+      if (this.mdMode) {
+        addMatches(this.mdCt.value, { kind: "markdown" });
+      } else {
+        const visit = (node) => {
+          addMatches(node.text, { kind: "node", node });
+          for (const child of node.children)
+            visit(child);
+        };
+        for (const root of this.roots)
+          visit(root);
+      }
+      this.searchIdx = keepIndex && this.searchResults.length
+        ? Math.min(previous, this.searchResults.length - 1)
+        : 0;
+      if (this.searchResults.length)
+        applyResult(this.searchIdx);
+      else
+        updateCount();
+    };
+    const preserveCase = (match, replacement) => {
+      if (!preserveToggle.checkbox.checked || !match)
+        return replacement;
+      if (match === match.toUpperCase())
+        return replacement.toUpperCase();
+      if (match === match.toLowerCase())
+        return replacement.toLowerCase();
+      if (match[0] === match[0].toUpperCase())
+        return replacement.charAt(0).toUpperCase() + replacement.slice(1);
+      return replacement;
+    };
+    const replaceMarkdownRange = (from, to, replacement) => {
+      const before = this.mdCt.value;
+      if (before.slice(from, to) === replacement)
+        return false;
+      this.mdCt.focus();
+      this.mdCt.setSelectionRange(from, to, "forward");
+      try {
+        document.execCommand("insertText", false, replacement);
+      } catch (e) {
+      }
+      if (this.mdCt.value === before) {
+        this.mdCt.setRangeText(replacement, from, to, "end");
+        this.mdCt.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          inputType: "insertReplacementText",
+          data: replacement
+        }));
+      }
+      return this.mdCt.value !== before;
+    };
+    const recordReplacement = () => {
+      replacementUndoDepth++;
+      replacementRedoDepth = 0;
+    };
+    const replaceOne = () => {
+      if (!this.searchResults.length)
+        return;
+      const result = this.searchResults[this.searchIdx];
+      const replacement = preserveCase(result.matched, replaceInput.value);
+      let changed = false;
+      if (result.kind === "markdown") {
+        changed = replaceMarkdownRange(result.from, result.to, replacement);
+      } else {
+        const nextText = result.node.text.slice(0, result.from) + replacement + result.node.text.slice(result.to);
+        if (nextText === result.node.text)
           return;
+        this.saveS();
+        result.node.text = nextText;
+        result.node.width = this.calcW(result.node.text, !!result.node.isRoot);
+        result.node.height = this.calcH(result.node.text, !!result.node.isRoot);
+        for (const root of this.roots)
+          this.doLayout(root);
+        this.render();
+        this.doSave();
+        changed = true;
+      }
+      if (changed)
+        recordReplacement();
+      doSearch(true);
+    };
+    const replaceAllMatches = () => {
+      const regex = regexForQuery();
+      if (!regex)
+        return;
+      const replaceText = (value) => value.replace(regex, (match) => preserveCase(match, replaceInput.value));
+      let changed = false;
+      if (this.mdMode) {
+        const nextValue = replaceText(this.mdCt.value);
+        changed = replaceMarkdownRange(0, this.mdCt.value.length, nextValue);
+      } else {
+        const updates = [];
+        const visit = (node) => {
+          const nextText = replaceText(node.text);
+          if (nextText !== node.text)
+            updates.push({ node, nextText });
+          for (const child of node.children)
+            visit(child);
+        };
+        for (const root of this.roots)
+          visit(root);
+        if (updates.length) {
+          this.saveS();
+          for (const update of updates) {
+            update.node.text = update.nextText;
+            update.node.width = this.calcW(update.node.text, !!update.node.isRoot);
+            update.node.height = this.calcH(update.node.text, !!update.node.isRoot);
+          }
+          for (const root of this.roots)
+            this.doLayout(root);
+          changed = true;
         }
-        if (e.key === "Escape") {
-          (_a2 = this.searchBar) == null ? void 0 : _a2.remove();
-          this.searchBar = null;
-          (_b = this.cc) == null ? void 0 : _b.focus({ preventScroll: true });
-          this.ensureProxy();
+        if (changed) {
+          this.render();
+          this.doSave();
         }
-      },
-      true
-    );
-    setTimeout(() => inp.focus(), 0);
+      }
+      if (changed)
+        recordReplacement();
+      doSearch();
+    };
+    expandBtn.addEventListener("click", () => {
+      panel.toggleClass("mz-plugin-search-expanded", !panel.hasClass("mz-plugin-search-expanded"));
+      if (panel.hasClass("mz-plugin-search-expanded"))
+        requestAnimationFrame(() => replaceInput.focus());
+    });
+    inp.addEventListener("input", () => doSearch());
+    for (const toggle of [caseToggle, wordToggle, regexToggle])
+      toggle.checkbox.addEventListener("change", () => doSearch());
+    prevBtn.addEventListener("click", () => applyResult(this.searchIdx - 1));
+    nextBtn.addEventListener("click", () => applyResult(this.searchIdx + 1));
+    selectBtn.addEventListener("click", () => {
+      if (!this.searchResults.length)
+        return;
+      if (this.mdMode) {
+        this.mdCt.focus();
+        this.mdCt.setSelectionRange(this.searchResults[0].from, this.searchResults[this.searchResults.length - 1].to);
+      } else {
+        this.multiSel = new Set(this.searchResults.map((result) => result.node.id));
+        this.selId = this.searchResults[0].node.id;
+        this.render();
+        this.notifyStatus();
+      }
+    });
+    replaceBtn.addEventListener("click", replaceOne);
+    replaceAllBtn.addEventListener("click", replaceAllMatches);
+    closeBtn.addEventListener("click", () => this.closeSearch());
+    const handleInputKey = (event, isReplace) => {
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      const historyKey = (event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === "z";
+      if (historyKey && (event.shiftKey ? replacementRedoDepth : replacementUndoDepth)) {
+        event.preventDefault();
+        const redo = event.shiftKey;
+        let changed = false;
+        if (this.mdMode) {
+          const before = this.mdCt.value;
+          this.mdCt.focus();
+          try {
+            document.execCommand(redo ? "redo" : "undo");
+          } catch (e) {
+          }
+          changed = this.mdCt.value !== before;
+        } else {
+          const before = JSON.stringify(this.roots);
+          if (redo)
+            this.redo();
+          else
+            this.undo();
+          changed = JSON.stringify(this.roots) !== before;
+        }
+        if (changed) {
+          if (redo) {
+            replacementRedoDepth--;
+            replacementUndoDepth++;
+          } else {
+            replacementUndoDepth--;
+            replacementRedoDepth++;
+          }
+          requestAnimationFrame(() => doSearch(true));
+        } else {
+          requestAnimationFrame(() => (isReplace ? replaceInput : inp).focus());
+        }
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        this.closeSearch();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        if (isReplace)
+          event.shiftKey ? replaceAllMatches() : replaceOne();
+        else
+          applyResult(this.searchIdx + (event.shiftKey ? -1 : 1));
+      } else if (event.key === "F3") {
+        event.preventDefault();
+        applyResult(this.searchIdx + (event.shiftKey ? -1 : 1));
+      }
+    };
+    inp.addEventListener("keydown", (event) => handleInputKey(event, false), true);
+    replaceInput.addEventListener("keydown", (event) => handleInputKey(event, true), true);
+    const selectedText = this.mdMode && this.mdCt.selectionStart !== this.mdCt.selectionEnd
+      ? this.mdCt.value.slice(this.mdCt.selectionStart, this.mdCt.selectionEnd)
+      : "";
+    inp.value = selectedText;
+    if (selectedText)
+      doSearch();
+    setTimeout(() => {
+      inp.focus();
+      inp.select();
+    }, 0);
+  }
+  closeSearch() {
+    var _a;
+    if (!this.searchBar)
+      return;
+    this.searchBar.remove();
+    this.searchBar = null;
+    this.searchResults = [];
+    this.searchIdx = 0;
+    if (this.mdMode) {
+      this.renderMdHighlights();
+      this.mdCt.focus();
+    } else {
+      this.render();
+      (_a = this.cc) == null ? void 0 : _a.focus({ preventScroll: true });
+      this.ensureProxy();
+    }
   }
   getCC(ch, pR, idx, inh) {
     if (ch.connectionColor)
@@ -6022,7 +6615,31 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       sel ? `${this.style.selectionWidth}px solid ${this.style.selectionColor}` : "none"
     );
     ds.setProperty("--mz-outline-off", sel ? off + "px" : "0");
-    div.innerText = nd.text;
+    if (this.revealNodeId === nd.id)
+      div.addClass("mz-node-outline-reveal");
+    const nodeMatches = this.searchBar
+      ? this.searchResults.filter((result) => result.kind === "node" && result.node.id === nd.id)
+      : [];
+    const currentSearchResult = this.searchResults[this.searchIdx];
+    if (nodeMatches.length) {
+      div.addClass("mz-node-search-result");
+      let cursor = 0;
+      for (const match of nodeMatches) {
+        if (match.from > cursor)
+          div.appendChild(document.createTextNode(nd.text.slice(cursor, match.from)));
+        const mark = document.createElement("mark");
+        mark.addClass("mz-node-search-match");
+        if (currentSearchResult === match)
+          mark.addClass("mz-node-search-match-current");
+        mark.textContent = nd.text.slice(match.from, match.to);
+        div.appendChild(mark);
+        cursor = Math.max(cursor, match.to);
+      }
+      if (cursor < nd.text.length)
+        div.appendChild(document.createTextNode(nd.text.slice(cursor)));
+    } else {
+      div.innerText = nd.text;
+    }
     div.addEventListener("mousedown", (e) => {
       var _a;
       if (this.spaceDown)
@@ -7261,6 +7878,10 @@ var MindMapOutlineView = class extends import_obsidian3.ItemView {
       return;
     }
     if (active.view instanceof MindMapView) {
+      if (active.view.mdMode) {
+        this.refreshMindMapMarkdown(active.view);
+        return;
+      }
       this.refreshMindMap(active.view);
       return;
     }
@@ -7280,6 +7901,16 @@ var MindMapOutlineView = class extends import_obsidian3.ItemView {
     for (const root of roots) {
       this.buildMindMapNode(this.treeEl, root, 0, view);
     }
+  }
+  refreshMindMapMarkdown(view) {
+    const headings = view.getMarkdownHeadings();
+    if (!headings.length) {
+      this.showEmpty();
+      return;
+    }
+    const tree = this.buildMdTree(headings);
+    for (const node of tree)
+      this.renderMdNode(this.treeEl, node, 0, view);
   }
   buildMindMapNode(parent, nd, depth, view) {
     const item = parent.createEl("div");
@@ -7312,8 +7943,14 @@ var MindMapOutlineView = class extends import_obsidian3.ItemView {
     }
     row.addEventListener("click", (e) => {
       e.stopPropagation();
+      const activeRows = this.treeEl.querySelectorAll(".mz-outline-row-active");
+      for (const activeRow of activeRows)
+        activeRow.removeClass("mz-outline-row-active");
+      row.addClass("mz-outline-row-active");
       view.selectAndFocusNode(nd.id);
     });
+    if (view.selId === nd.id)
+      row.addClass("mz-outline-row-active");
     if (hasChildren) {
       const childCt = item.createEl("div");
       childCt.addClass("mz-outline-children");
@@ -7398,6 +8035,10 @@ var MindMapOutlineView = class extends import_obsidian3.ItemView {
     const targetLine = node.line;
     row.addEventListener("click", (e) => {
       e.stopPropagation();
+      const activeRows = this.treeEl.querySelectorAll(".mz-outline-row-active");
+      for (const activeRow of activeRows)
+        activeRow.removeClass("mz-outline-row-active");
+      row.addClass("mz-outline-row-active");
       for (const l of this.app.workspace.getLeavesOfType("markdown")) {
         if (l.view === mdView) {
           if (this.app.workspace.activeLeaf !== l) {
@@ -7876,6 +8517,11 @@ var MindNodePlugin = class extends import_obsidian5.Plugin {
         toolbarStyleLight: d.toolbarStyleLight || this.getToolbarColorsFromStyle(styleLight),
         toolbarStyleDark: d.toolbarStyleDark || this.getToolbarColorsFromStyle(styleDark)
       };
+      // Migrate the historic conflicting default. Keep genuinely custom
+      // bindings, but Space must remain the canvas hand tool and node edit
+      // uses Ctrl+Enter.
+      if (String(this.settings.keyBindings.editNode || "").toLowerCase() === "space")
+        this.settings.keyBindings.editNode = "ctrl+Enter";
       const valid = [
         "bezier",
         "straight",

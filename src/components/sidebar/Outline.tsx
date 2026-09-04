@@ -379,7 +379,8 @@ export const Outline: Component = () => {
   );
 
   onMount(() => {
-    const handler = () => {
+    const handler = (event: Event) => {
+      if (event.cancelable) event.preventDefault();
       if (!mountedOutlineView?.refresh) {
         mountOutline();
         return;
