@@ -7,7 +7,7 @@
  * - Bold, italic, strikethrough, highlight, inline code
  * - Links (markdown & wiki), images
  * - Fenced code blocks with Shiki syntax highlighting
- * - Math (inline $...$ and block $$...$$) with KaTeX
+ * - Math blocks ($$...$$) with KaTeX
  * - Mermaid diagrams
  * - Callout/admonition blocks
  * - Tables
@@ -51,7 +51,10 @@ import { linkifyHtmlText, ensureScheme } from "../../utils/autoLink";
 import { invoke } from "@tauri-apps/api/core";
 import { t } from "../../i18n";
 import { getReadableMarkerTextColor, resolveMarkerColor } from "./markerColors";
-import { createInlineMathRegex } from "../../utils/inlineMath";
+import {
+    createHighlightRegex,
+    createItalicRegex,
+} from "../../utils/markdownInline";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML renderer
@@ -532,23 +535,6 @@ function markdownToHtml(md: string, ctx: RenderContext): string {
 function renderInline(text: string, ctx: RenderContext): string {
     let result = escapeHtml(text);
 
-    // Inline math: $...$
-    result = result.replace(
-        createInlineMathRegex(),
-        (_, tex) => {
-            try {
-                return katex.renderToString(unescapeHtml(tex).trim(), {
-                    displayMode: false,
-                    throwOnError: false,
-                    output: "html",
-                    trust: true,
-                });
-            } catch {
-                return `<code class="mz-rv-error">${tex}</code>`;
-            }
-        },
-    );
-
     // Images: ![alt](src) — with optional `|width` / `|widthxheight`
     // suffix in the alt text for persisted display size (see
     // `utils/imageSize.ts`).
@@ -617,10 +603,7 @@ function renderInline(text: string, ctx: RenderContext): string {
     );
 
     // Italic: exactly one asterisk only. Avoid list markers and bold.
-    result = result.replace(
-        /(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)/g,
-        "<em>$1</em>",
-    );
+    result = result.replace(createItalicRegex(), "<em>$1</em>");
 
     // Strikethrough: ~~text~~
     result = result.replace(/~~(.+?)~~/g, "<del>$1</del>");
@@ -631,9 +614,9 @@ function renderInline(text: string, ctx: RenderContext): string {
         '<span class="mz-rv-underline">$1</span>',
     );
 
-    // Highlight: ==text==
+    // Highlight: %%text%%
     result = result.replace(
-        /==(.+?)==/g,
+        createHighlightRegex(),
         '<mark class="mz-rv-highlight">$1</mark>',
     );
 

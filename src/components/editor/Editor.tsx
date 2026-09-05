@@ -1390,7 +1390,7 @@ export const Editor: Component<EditorProps> = (props) => {
                 // Inline code: use Ctrl+Shift+E instead.
                 { key: "Mod-Shift-e", run: (v) => wrapSelection(v, "`") },
                 { key: "Mod-k", run: (v) => insertLink(v) },
-                { key: "Mod-Shift-h", run: (v) => wrapSelection(v, "==") },
+                { key: "Mod-Shift-h", run: (v) => wrapSelection(v, "%%") },
                 // Heading shortcuts: Ctrl+1 ~ Ctrl+6 for H1-H6
                 { key: "Mod-1", run: (v) => setHeading(v, 1) },
                 { key: "Mod-2", run: (v) => setHeading(v, 2) },
@@ -1987,8 +1987,11 @@ export const Editor: Component<EditorProps> = (props) => {
     }
 
     async function pasteFromClipboard(view: EditorView) {
-        const text = await navigator.clipboard.readText().catch(() => "");
-        if (!text) return;
+        const clipboardText = await navigator.clipboard
+            .readText()
+            .catch(() => "");
+        if (!clipboardText) return;
+        const text = normalizePastedOrderedLists(clipboardText);
         const selection = view.state.selection.main;
         view.dispatch({
             changes: { from: selection.from, to: selection.to, insert: text },
@@ -2025,13 +2028,66 @@ export const Editor: Component<EditorProps> = (props) => {
         view.focus();
     }
 
+    async function switchViewModeFromContextMenu(
+        view: EditorView,
+        mode: ViewMode,
+    ) {
+        activatePane();
+        const path = currentFilePath ?? resolvedFile()?.path ?? null;
+        if (!path) return;
+        if (getActiveViewMode() === mode) {
+            view.focus();
+            return;
+        }
+
+        // The mode switch replaces this Editor component. Persist the current
+        // document first so Reading view (or the rebuilt source/edit view)
+        // receives the latest text instead of the last debounced save.
+        rememberEditorViewport(view);
+        const content = view.state.doc.toString();
+        const savedContent = resolvedFile()?.content ?? "";
+        if (editorStore.isDirtyPath(path) || content !== savedContent) {
+            await editorStore.forceSave(path, content, {
+                suppressSavedEvent: true,
+            });
+        }
+        editorStore.setViewMode(mode, path);
+    }
+
     function buildEditorContextMenu(view: EditorView): MenuItem[] {
         return [
+            {
+                label: t("common.copy"),
+                action: () => {
+                    void copySelection(view);
+                },
+            },
+            {
+                label: t("context.paste"),
+                action: () => {
+                    void pasteFromClipboard(view);
+                },
+            },
+            {
+                label: t("context.readingView"),
+                action: () => switchViewModeFromContextMenu(view, "reading"),
+                separator: true,
+            },
+            {
+                label: t("context.editMode"),
+                action: () =>
+                    switchViewModeFromContextMenu(view, "live-preview"),
+            },
+            {
+                label: t("context.sourceMode"),
+                action: () => switchViewModeFromContextMenu(view, "source"),
+            },
             {
                 label: t("toolbar.undo"),
                 action: () => {
                     undo(view);
                 },
+                separator: true,
             },
             {
                 label: t("toolbar.redo"),
@@ -2045,18 +2101,6 @@ export const Editor: Component<EditorProps> = (props) => {
                     void cutSelection(view);
                 },
                 separator: true,
-            },
-            {
-                label: t("common.copy"),
-                action: () => {
-                    void copySelection(view);
-                },
-            },
-            {
-                label: t("context.paste"),
-                action: () => {
-                    void pasteFromClipboard(view);
-                },
             },
             {
                 label: t("context.pastePlainText"),
@@ -2104,7 +2148,7 @@ export const Editor: Component<EditorProps> = (props) => {
             {
                 label: t("toolbar.highlight"),
                 action: () => {
-                    wrapSelection(view, "==");
+                    wrapSelection(view, "%%");
                 },
             },
             {
@@ -2250,37 +2294,6 @@ export const Editor: Component<EditorProps> = (props) => {
                     activatePane();
                     document.dispatchEvent(
                         new CustomEvent("mindzj:toggle-ai-panel"),
-                    );
-                },
-            },
-            {
-                label: t("context.editMode"),
-                action: () => {
-                    activatePane();
-                    editorStore.setViewMode(
-                        "live-preview",
-                        currentFilePath ?? undefined,
-                    );
-                },
-                separator: true,
-            },
-            {
-                label: t("context.sourceMode"),
-                action: () => {
-                    activatePane();
-                    editorStore.setViewMode(
-                        "source",
-                        currentFilePath ?? undefined,
-                    );
-                },
-            },
-            {
-                label: t("context.readingView"),
-                action: () => {
-                    activatePane();
-                    editorStore.setViewMode(
-                        "reading",
-                        currentFilePath ?? undefined,
                     );
                 },
             },
@@ -2703,7 +2716,7 @@ export const Editor: Component<EditorProps> = (props) => {
                 wrapSelection(view, "<u>", "</u>");
                 break;
             case "highlight":
-                wrapSelection(view, "==");
+                wrapSelection(view, "%%");
                 break;
             case "color-highlight": {
                 applyColorHighlightCommand(
@@ -2870,7 +2883,7 @@ export const Editor: Component<EditorProps> = (props) => {
                         "$1",
                     )
                     .replace(/~~(.*?)~~/g, "$1")
-                    .replace(/==(.*?)==/g, "$1")
+                    .replace(/%%(.*?)%%/g, "$1")
                     .replace(/`(.*?)`/g, "$1")
                     .replace(/<u>(.*?)<\/u>/g, "$1");
                 view.dispatch({

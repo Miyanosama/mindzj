@@ -1664,11 +1664,6 @@ html[data-theme-mode="light"] .mz-lp-checkbox:checked {
     box-shadow: none;
 }
 
-/* Inline math */
-.mz-lp-inline-math {
-    font-size: 0.95em;
-}
-
 /* ===================================================================
    Reading View Styles
    =================================================================== */

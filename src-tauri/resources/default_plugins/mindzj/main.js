@@ -3349,6 +3349,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     this.panX = 0;
     this.panY = 0;
     this.zoom = 1;
+    this.hasRestoredEphemeralState = false;
     this.spaceDown = false;
     this.dragCv = false;
     this.smx = 0;
@@ -3383,6 +3384,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     this.animId = null;
     this.liveTA = null;
     this.mdSnapshot = null;
+    this.mdClipboardText = null;
     this.zoomLabel = null;
     this.proxyTA = null;
     this.proxyNodeId = null;
@@ -3797,7 +3799,7 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       if (this.mdMode)
         this.renderMd();
       else
-        this.fitAll();
+        this.fitAll(true);
     }
     this.notifyStatus();
   }
@@ -3884,12 +3886,14 @@ var _MindMapView = class extends import_obsidian.TextFileView {
       }
     }));
   }
-  fitAll() {
+  fitAll(skipWhenRestored = false) {
+    if (skipWhenRestored && this.hasRestoredEphemeralState)
+      return;
     if (!this.cc || !this.roots.length)
       return;
     const rc = this.cc.getBoundingClientRect();
     if (rc.width < 1 || rc.height < 1) {
-      requestAnimationFrame(() => this.fitAll());
+      requestAnimationFrame(() => this.fitAll(skipWhenRestored));
       return;
     }
     for (const r of this.roots)
@@ -3989,9 +3993,82 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     this.syncMdHighlightScroll();
     this.notifyStatus();
   }
+  getEphemeralState() {
+    return {
+      mindzjViewState: 1,
+      mode: this.mdMode ? "markdown" : "map",
+      markdown: this.mdCt ? {
+        scrollTop: this.mdCt.scrollTop,
+        scrollLeft: this.mdCt.scrollLeft,
+        selectionStart: this.mdCt.selectionStart,
+        selectionEnd: this.mdCt.selectionEnd
+      } : null,
+      map: {
+        panX: this.panX,
+        panY: this.panY,
+        zoom: this.zoom,
+        selectedNodeId: this.selId
+      }
+    };
+  }
   setEphemeralState(state) {
-    if (this.mdMode && state && state.line !== void 0)
-      this.focusMarkdownLine(state.line);
+    if (!state)
+      return;
+    if (state.line !== void 0) {
+      if (this.mdMode)
+        this.focusMarkdownLine(state.line);
+      return;
+    }
+    if (state.mindzjViewState !== 1)
+      return;
+    this.hasRestoredEphemeralState = true;
+    const mapState = state.map || {};
+    if (Number.isFinite(mapState.panX))
+      this.panX = mapState.panX;
+    if (Number.isFinite(mapState.panY))
+      this.panY = mapState.panY;
+    if (Number.isFinite(mapState.zoom))
+      this.zoom = Math.max(0.1, Math.min(mapState.zoom, 3));
+    if (mapState.selectedNodeId && this.fAll(mapState.selectedNodeId))
+      this.selId = mapState.selectedNodeId;
+    if (state.mode !== "markdown") {
+      this.mdMode = false;
+      this.mdWrap?.toggleClass("mz-hidden", true);
+      this.svgCt?.toggleClass("mz-hidden", false);
+      if (this.mdBtn) {
+        this.mdBtn.innerText = t("tb.md");
+        this.mdBtn.title = t("tb.tipMd");
+      }
+      this.render();
+      this.updTx();
+      this.notifyStatus();
+      return;
+    }
+    this.mdMode = true;
+    this.mdSnapshot = JSON.stringify(this.roots);
+    this.svgCt?.toggleClass("mz-hidden", true);
+    this.mdWrap?.toggleClass("mz-hidden", false);
+    if (this.mdBtn) {
+      this.mdBtn.innerText = t("tb.map");
+      this.mdBtn.title = t("tb.tipMap");
+    }
+    this.mdCt.value = this.roots2md();
+    this.renderMdHighlights();
+    this.updateOutlineHeadings();
+    const markdownState = state.markdown || {};
+    requestAnimationFrame(() => {
+      if (!this.mdMode || !this.mdCt)
+        return;
+      const maxOffset = this.mdCt.value.length;
+      const selectionStart = Math.max(0, Math.min(Number.isFinite(markdownState.selectionStart) ? markdownState.selectionStart : 0, maxOffset));
+      const selectionEnd = Math.max(selectionStart, Math.min(Number.isFinite(markdownState.selectionEnd) ? markdownState.selectionEnd : selectionStart, maxOffset));
+      this.mdCt.focus({ preventScroll: true });
+      this.mdCt.setSelectionRange(selectionStart, selectionEnd);
+      this.mdCt.scrollTop = Math.max(0, Number.isFinite(markdownState.scrollTop) ? markdownState.scrollTop : 0);
+      this.mdCt.scrollLeft = Math.max(0, Number.isFinite(markdownState.scrollLeft) ? markdownState.scrollLeft : 0);
+      this.syncMdHighlightScroll();
+      this.notifyStatus();
+    });
   }
   /** Select a node by id and pan the canvas to center it. */
   selectAndFocusNode(id) {
@@ -4064,6 +4141,40 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     this.mdHighlightContent.addClass("mz-md-highlight-content");
     this.mdCt = this.mdWrap.createEl("textarea");
     this.mdCt.addClass("mz-md-ta");
+    this.mdCt.addEventListener("copy", (event) => {
+      if (!this.mdMode)
+        return;
+      const start = this.mdCt.selectionStart;
+      const end = this.mdCt.selectionEnd;
+      if (start === end)
+        return;
+      const text = this.mdCt.value.slice(start, end);
+      this.mdClipboardText = text;
+      if (event.clipboardData) {
+        event.clipboardData.setData("text/plain", text);
+        event.preventDefault();
+      }
+    });
+    this.mdCt.addEventListener("paste", (event) => {
+      if (!this.mdMode)
+        return;
+      const text = event.clipboardData?.getData("text/plain");
+      if (text == null)
+        return;
+      event.preventDefault();
+      this.insertMarkdownText(text);
+    });
+    this.mdCt.addEventListener("contextmenu", (event) => {
+      if (!this.mdMode)
+        return;
+      event.preventDefault();
+      event.stopPropagation();
+      const selection = {
+        start: this.mdCt.selectionStart,
+        end: this.mdCt.selectionEnd
+      };
+      this.showMarkdownCtx(event, selection);
+    });
     this.mdCt.addEventListener("input", () => {
       if (!this.mdMode)
         return;
@@ -4115,8 +4226,12 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     this.updateDevPanel();
     setTimeout(() => {
       var _a;
+      if (this.mdMode) {
+        this.mdCt?.focus({ preventScroll: true });
+        return;
+      }
       if (this.roots.length)
-        this.fitAll();
+        this.fitAll(true);
       (_a = this.cc) == null ? void 0 : _a.focus({ preventScroll: true });
     }, 0);
   }
@@ -6186,6 +6301,59 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     ta.setRangeText(text, start, end, "end");
     ta.dispatchEvent(new Event("input"));
   }
+  insertMarkdownText(text, start = this.mdCt?.selectionStart, end = this.mdCt?.selectionEnd) {
+    if (!this.mdCt || !this.mdMode || start == null || end == null)
+      return false;
+    const ta = this.mdCt;
+    ta.focus({ preventScroll: true });
+    ta.setSelectionRange(start, end);
+    let inserted = false;
+    try {
+      inserted = document.execCommand("insertText", false, text);
+    } catch (e) {
+    }
+    if (!inserted) {
+      ta.setRangeText(text, start, end, "end");
+      ta.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "insertFromPaste",
+        data: text
+      }));
+    }
+    return true;
+  }
+  async copyMarkdownSelection(start = this.mdCt?.selectionStart, end = this.mdCt?.selectionEnd) {
+    if (!this.mdCt || !this.mdMode || start == null || end == null || start === end)
+      return false;
+    const text = this.mdCt.value.slice(start, end);
+    this.mdClipboardText = text;
+    this.mdCt.focus({ preventScroll: true });
+    this.mdCt.setSelectionRange(start, end);
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (e) {
+    }
+    try {
+      return document.execCommand("copy");
+    } catch (e) {
+      return false;
+    }
+  }
+  async pasteMarkdownClipboard(start = this.mdCt?.selectionStart, end = this.mdCt?.selectionEnd) {
+    if (!this.mdCt || !this.mdMode || start == null || end == null)
+      return false;
+    let text = null;
+    try {
+      text = await navigator.clipboard.readText();
+    } catch (e) {
+    }
+    if (text == null)
+      text = this.mdClipboardText;
+    if (text == null)
+      return false;
+    return this.insertMarkdownText(text, start, end);
+  }
   /**
    * Async paste handler for Ctrl+V on a selected (non-editing) node.
    * - If the last copy was a node copy (clipboard matches) → structural paste
@@ -6886,6 +7054,22 @@ var _MindMapView = class extends import_obsidian.TextFileView {
     menu.addSeparator();
     menu.addItem(
       (i) => i.setTitle(t("ctx.globalStyle")).onClick(() => this.showStyleModal())
+    );
+    this.showMenu(menu, e);
+  }
+  showMarkdownCtx(e, selection) {
+    this.closePop();
+    const menu = new import_obsidian.Menu();
+    const hasSelection = selection.start !== selection.end;
+    menu.addItem(
+      (i) => i.setTitle(t("ctx.copy")).setIcon("copy").setDisabled(!hasSelection).onClick(() => {
+        void this.copyMarkdownSelection(selection.start, selection.end);
+      })
+    );
+    menu.addItem(
+      (i) => i.setTitle(t("ctx.paste")).setIcon("clipboard-paste").onClick(() => {
+        void this.pasteMarkdownClipboard(selection.start, selection.end);
+      })
     );
     this.showMenu(menu, e);
   }

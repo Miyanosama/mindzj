@@ -28,8 +28,10 @@ import {
     StateField,
     Transaction,
 } from "@codemirror/state";
-import katex from "katex";
-import { findInlineMathMatches } from "../../../utils/inlineMath";
+import {
+    createHighlightRegex,
+    createItalicRegex,
+} from "../../../utils/markdownInline";
 import { invoke } from "@tauri-apps/api/core";
 import { resolveImageAssetUrl } from "../../../utils/vaultPaths";
 import {
@@ -511,40 +513,12 @@ class BulletWidget extends WidgetType {
 }
 const bulletWidget = new BulletWidget();
 
-/** Inline math widget rendered with KaTeX */
-class InlineMathWidget extends WidgetType {
-    constructor(private tex: string) {
-        super();
-    }
-
-    toDOM(): HTMLElement {
-        const span = document.createElement("span");
-        span.className = "mz-lp-inline-math";
-        try {
-            katex.render(this.tex.trim(), span, {
-                displayMode: false,
-                throwOnError: false,
-                output: "html",
-                trust: true,
-            });
-        } catch {
-            span.textContent = `$${this.tex}$`;
-            span.style.color = "var(--mz-error)";
-        }
-        return span;
-    }
-
-    eq(other: InlineMathWidget): boolean {
-        return this.tex === other.tex;
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Decoration builders
 // ---------------------------------------------------------------------------
 
 /**
- * Hide syntax markers (**, __, ~~, ==, [, ](url), etc.) via a MARK
+ * Hide syntax markers (**, __, ~~, %%, [, ](url), etc.) via a MARK
  * decoration with CSS that collapses them to zero visual width.
  *
  * Previous approach used `Decoration.replace({})` which REMOVED the
@@ -1681,7 +1655,7 @@ function buildDecorationsImpl(
             applyInlineFormat(
                 text,
                 line.from,
-                /(?<!\*)\*(?![\s*])(.+?)(?<![\s*])\*(?!\*)/g,
+                createItalicRegex(),
                 1,
                 1,
                 italicDeco,
@@ -1699,11 +1673,11 @@ function buildDecorationsImpl(
                 decorations,
             );
 
-            // Highlight: ==text==
+            // Highlight: %%text%%
             applyInlineFormat(
                 text,
                 line.from,
-                /==(.+?)==/g,
+                createHighlightRegex(),
                 2,
                 2,
                 highlightDeco,
@@ -1798,18 +1772,6 @@ function buildDecorationsImpl(
                     if (overlapsLink) continue;
                     decorations.push(linkDeco.range(start, end));
                 }
-            }
-
-            // Inline math: $...$ (not $$)
-            for (const mathMatch of findInlineMathMatches(text)) {
-                const start = line.from + mathMatch.from;
-                const end = line.from + mathMatch.to;
-                const tex = mathMatch.tex;
-                decorations.push(
-                    Decoration.replace({
-                        widget: new InlineMathWidget(tex),
-                    }).range(start, end),
-                );
             }
 
             // Tags: #tag (but not inside code or links)
@@ -2630,13 +2592,6 @@ const livePreviewTheme = EditorView.baseTheme({
     },
     ".mz-lp-image": {
         display: "block",
-    },
-    ".mz-lp-inline-math": {
-        fontFamily: "KaTeX_Math, serif",
-        padding: "0 2px",
-    },
-    ".mz-lp-inline-math .katex": {
-        fontSize: "1em",
     },
     ".mz-lp-tag": {
         color: "var(--mz-accent)",

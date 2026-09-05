@@ -1154,6 +1154,15 @@ const pluginExtensionMap = new Map<string, string>();
 const activePluginViews = new Map<string, any>();
 let activePluginViewHandle: string | null = null;
 
+/**
+ * Per-file UI state for plugin views that are temporarily unmounted while the
+ * user switches tabs. File content remains owned by the vault; this cache is
+ * intentionally limited to ephemeral presentation state such as mode, scroll,
+ * selection, pan, and zoom.
+ */
+const pluginViewEphemeralStates = new Map<string, unknown>();
+const MAX_PLUGIN_VIEW_EPHEMERAL_STATES = 100;
+
 /** Monotonic counter for generating unique mount handles. */
 let _pluginMountCounter = 0;
 
@@ -1424,6 +1433,16 @@ export async function mountPluginView(
             await view.setViewData(content, true);
         }
 
+        const savedEphemeralState = pluginViewEphemeralStates.get(
+            _normPath(filePath),
+        );
+        if (
+            savedEphemeralState !== undefined &&
+            typeof view.setEphemeralState === "function"
+        ) {
+            await Promise.resolve(view.setEphemeralState(savedEphemeralState));
+        }
+
         activatePluginView(handle);
 
         console.log(
@@ -1445,6 +1464,30 @@ export async function mountPluginView(
 export function destroyPluginView(handle: string) {
     const view = activePluginViews.get(handle);
     if (view) {
+        try {
+            if (
+                view.file?.path &&
+                typeof view.getEphemeralState === "function"
+            ) {
+                const state = view.getEphemeralState();
+                if (state !== undefined) {
+                    const statePath = _normPath(view.file.path);
+                    // Reinsert so Map iteration order acts as a tiny LRU.
+                    pluginViewEphemeralStates.delete(statePath);
+                    pluginViewEphemeralStates.set(statePath, state);
+                    if (
+                        pluginViewEphemeralStates.size >
+                        MAX_PLUGIN_VIEW_EPHEMERAL_STATES
+                    ) {
+                        const oldest = pluginViewEphemeralStates.keys().next()
+                            .value as string | undefined;
+                        if (oldest) pluginViewEphemeralStates.delete(oldest);
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn("[Plugin View] ephemeral state capture error:", e);
+        }
         try {
             if (typeof view.onClose === "function") view.onClose();
         } catch (e) {
