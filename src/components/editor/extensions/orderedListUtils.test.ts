@@ -23,7 +23,7 @@ describe("ordered list layout", () => {
         expect(toggleOrderedListLines([""]).lines).toEqual(["1. "]);
     });
 
-    it("creates a loose ordered list when selected paragraphs have blank rows", () => {
+    it("always creates a tight ordered list even when selected prose has blank rows", () => {
         expect(toggleOrderedListLines([
             "第一行内容",
             "",
@@ -31,8 +31,8 @@ describe("ordered list layout", () => {
             "",
             "第三行内容",
         ])).toEqual({
-            lines: ["1. 第一行内容", "", "2. 第二行内容", "", "3. 第三行内容"],
-            mode: "create-loose",
+            lines: ["1. 第一行内容", "2. 第二行内容", "3. 第三行内容"],
+            mode: "create-tight",
         });
     });
 
@@ -76,16 +76,31 @@ describe("ordered list layout", () => {
         expect(findOrderedListBlock(lines, 3)).toEqual({ from: 3, to: 4 });
     });
 
+    it("does not inherit loose spacing from a one-item list above", () => {
+        const lines = ["1. list A", "", "1. list B first", "2. list B second"];
+        expect(findOrderedListBlock(lines, 0)).toEqual({ from: 0, to: 0 });
+        expect(findOrderedListBlock(lines, 2)).toEqual({ from: 2, to: 3 });
+        expect(orderedListHasBlankSeparators(lines, 2)).toBe(false);
+        expect(orderedListHasBlankSeparators(lines, 3)).toBe(false);
+    });
+
+    it("treats an adjacent restart at 1 as a new ordered list", () => {
+        const lines = ["1. old one", "2. old two", "1. new one", "2. new two"];
+        expect(findOrderedListBlock(lines, 0)).toEqual({ from: 0, to: 1 });
+        expect(findOrderedListBlock(lines, 2)).toEqual({ from: 2, to: 3 });
+    });
+
     it("ends a list when two or more blank rows separate numbered items", () => {
         const lines = ["1. old", "", "", "2. independent"];
         expect(findOrderedListBlock(lines, 0)).toEqual({ from: 0, to: 0 });
         expect(findOrderedListBlock(lines, 3)).toEqual({ from: 3, to: 3 });
     });
 
-    it("only continues across one blank row when numbering has not restarted", () => {
+    it("continues only when numbering has not restarted and there is at most one blank row", () => {
         const one = parseOrderedListItem("1. one")!;
         const two = parseOrderedListItem("2. two")!;
         const restarted = parseOrderedListItem("1. new")!;
+        expect(canContinueOrderedList(one, restarted, 0)).toBe(false);
         expect(canContinueOrderedList(one, two, 1)).toBe(true);
         expect(canContinueOrderedList(one, restarted, 1)).toBe(false);
         expect(canContinueOrderedList(one, two, 2)).toBe(false);

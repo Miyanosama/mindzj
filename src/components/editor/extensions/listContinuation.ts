@@ -1,4 +1,9 @@
-import { EditorSelection, Extension } from "@codemirror/state";
+import {
+    Annotation,
+    EditorSelection,
+    Extension,
+    Transaction,
+} from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import {
     buildIndentFromColumns,
@@ -234,7 +239,9 @@ function outdentCurrentLine(view: EditorView): boolean {
  * When a numbered marker changes, subsequent consecutive items at the
  * same indent level are renumbered sequentially.
  */
-function renumberOrderedList(view: EditorView): void {
+const orderedListRenumberTransaction = Annotation.define<boolean>();
+
+export function renumberOrderedList(view: EditorView): void {
     const doc = view.state.doc;
     const changes: { from: number; to: number; insert: string }[] = [];
 
@@ -281,12 +288,27 @@ function renumberOrderedList(view: EditorView): void {
     }
 
     if (changes.length > 0) {
-        view.dispatch({ changes });
+        // Renumbering is a consequence of the user's edit, not another edit
+        // the user should have to undo. Keeping it out of CM6 history prevents
+        // invisible numbering passes from consuming Ctrl+Z/Ctrl+Shift+Z steps;
+        // undo/redo of the original edit will trigger a fresh renumber pass.
+        view.dispatch({
+            changes,
+            annotations: [
+                Transaction.addToHistory.of(false),
+                orderedListRenumberTransaction.of(true),
+            ],
+        });
     }
 }
 
 const orderedListRenumber = EditorView.updateListener.of((update) => {
     if (!update.docChanged) return;
+    if (
+        update.transactions.every((transaction) =>
+            transaction.annotation(orderedListRenumberTransaction)
+        )
+    ) return;
     setTimeout(() => renumberOrderedList(update.view), 0);
 });
 

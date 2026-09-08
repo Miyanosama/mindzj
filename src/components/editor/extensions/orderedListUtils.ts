@@ -31,7 +31,10 @@ export function parseOrderedListItem(line: string): OrderedListItem | null {
 
 /**
  * A single blank row can make one Markdown list loose. Two blank rows end the
- * block, and `1.` after a blank row explicitly starts a fresh ordered list.
+ * block. Restarting at `1.` also starts a fresh ordered list, even when the
+ * author put it immediately after the preceding list. Enter-based continuation
+ * creates the next sequential number, so an explicit restart is unambiguous in
+ * MindZJ and must not inherit the preceding list's loose/tight layout.
  */
 export function canContinueOrderedList(
     previous: OrderedListItem,
@@ -39,8 +42,9 @@ export function canContinueOrderedList(
     blankLineCount: number,
 ): boolean {
     if (previous.indent !== next.indent) return false;
+    if (next.number === 1) return false;
     if (blankLineCount === 0) return true;
-    return blankLineCount === 1 && next.number !== 1;
+    return blankLineCount === 1;
 }
 
 function hasInternalBlankLine(lines: readonly string[]): boolean {
@@ -93,15 +97,15 @@ export function toggleOrderedListLines(
         };
     }
 
-    const contentLines = nonBlankLines;
-    const numbered = contentLines.map((line, index) => `${index + 1}. ${line}`);
+    // Creating a list is intentionally independent of the whitespace in the
+    // selected prose. Blank source rows may come from paragraph spacing or a
+    // loose list above the selection; neither is permission to make this new
+    // list loose. Users can explicitly toggle the newly-created list loose in
+    // a second action.
+    const numbered = nonBlankLines.map((line, index) => `${index + 1}. ${line}`);
     return {
-        lines: currentlyLoose
-            ? numbered.flatMap((line, index) =>
-                index === numbered.length - 1 ? [line] : [line, ""]
-            )
-            : numbered,
-        mode: currentlyLoose ? "create-loose" : "create-tight",
+        lines: numbered,
+        mode: "create-tight",
     };
 }
 
