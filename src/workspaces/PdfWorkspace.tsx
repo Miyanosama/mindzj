@@ -20,26 +20,19 @@ import pdfWorkerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { vaultStore } from "../stores/vault";
 import { editorStore } from "../stores/editor";
 import { aiStore } from "../stores/ai";
-import { processingJobStore, type ProcessingJobStatus } from "../stores/processingJobs";
 import { displayName } from "../utils/displayName";
 import { toVaultAssetUrl } from "../utils/vaultPaths";
 import { t } from "../i18n";
 import { analyzePdfPage, type PdfPageAnalysis } from "../services/pdf/layout";
 import {
-    getParagraphAnalyses,
     getPdfParagraphs,
     getPdfRecord,
-    saveParagraphAnalysis,
-    saveProcessingJob,
     indexPdfDocument,
     searchPdfDocument,
-    type ParagraphAnalysisRecord,
-    type PaperReference,
     type PdfParagraphRecord,
     type PdfSearchResult,
 } from "../services/pdf/literatureRepository";
-import { analyzePaperParagraph, translateSelectedText } from "../services/pdf/paperAiService";
-import { ParagraphCardLane } from "../components/pdf/ParagraphCardLane";
+import { translateSelectedText } from "../services/pdf/paperAiService";
 import { PdfAiChatPanel } from "../components/pdf/PdfAiChatPanel";
 
 let pdfModulePromise: Promise<typeof import("pdfjs-dist")> | null = null;
@@ -87,12 +80,6 @@ const ContinuousPdfPage: Component<{
     activeResult: PdfSearchResult | null;
     estimatedWidth: number;
     estimatedHeight: number;
-    paragraphs: PdfParagraphRecord[];
-    analyses: ParagraphAnalysisRecord[];
-    showCards: boolean;
-    evidenceBoxes: import("../services/pdf/layout").PdfBox[];
-    onEvidenceChange: (pageNumber: number, boxes: import("../services/pdf/layout").PdfBox[] | null) => void;
-    onInsertReference: (reference: PaperReference) => void;
 }> = (props) => {
     let pageRef: HTMLDivElement | undefined;
     let canvasRef: HTMLCanvasElement | undefined;
@@ -201,7 +188,7 @@ const ContinuousPdfPage: Component<{
     });
 
     return (
-        <div ref={pageRef} data-pdf-page={props.pageNumber} class="mz-pdf-page-with-cards">
+        <div ref={pageRef} data-pdf-page={props.pageNumber} class="mz-pdf-page">
             <div
                 class="mz-pdf-page-surface"
                 style={{
@@ -214,28 +201,15 @@ const ContinuousPdfPage: Component<{
                 <Show when={props.activeResult?.pageNumber === props.pageNumber}>
                     <PdfHighlightOverlay boxes={props.activeResult?.boxes ?? []} kind="search" />
                 </Show>
-                <Show when={props.evidenceBoxes.length}>
-                    <PdfHighlightOverlay boxes={props.evidenceBoxes} kind="evidence" />
-                </Show>
                 <span class="mz-pdf-page-badge">{props.pageNumber}</span>
             </div>
-            <Show when={props.showCards}>
-                <ParagraphCardLane
-                    pageNumber={props.pageNumber}
-                    pageHeight={naturalHeight() * props.zoom}
-                    paragraphs={props.paragraphs}
-                    analyses={props.analyses}
-                    onEvidenceChange={(boxes) => props.onEvidenceChange(props.pageNumber, boxes)}
-                    onInsertReference={props.onInsertReference}
-                />
-            </Show>
         </div>
     );
 };
 
 const PdfHighlightOverlay: Component<{
     boxes: import("../services/pdf/layout").PdfBox[];
-    kind: "search" | "evidence";
+    kind: "search";
 }> = (props) => (
     <div class={`mz-pdf-highlight-layer is-${props.kind}`}>
         <For each={props.boxes}>
@@ -275,24 +249,11 @@ export const PdfWorkspace: Component<{
     const [searchResults, setSearchResults] = createSignal<PdfSearchResult[]>([]);
     const [showSearch, setShowSearch] = createSignal(false);
     const [activeResult, setActiveResult] = createSignal<PdfSearchResult | null>(null);
-    const [paperId, setPaperId] = createSignal<string | null>(null);
-    const [paragraphs, setParagraphs] = createSignal<PdfParagraphRecord[]>([]);
-    const [analyses, setAnalyses] = createSignal<ParagraphAnalysisRecord[]>([]);
-    const [showCards, setShowCards] = createSignal(true);
     const [showAiChat, setShowAiChat] = createSignal(false);
-    const [paperAiEnabled, setPaperAiEnabled] = createSignal(false);
-    const [queuedReference, setQueuedReference] = createSignal<PaperReference | null>(null);
-    const [activeEvidence, setActiveEvidence] = createSignal<{
-        pageNumber: number;
-        boxes: import("../services/pdf/layout").PdfBox[];
-    } | null>(null);
-    const [pretranslationStatus, setPretranslationStatus] = createSignal<ProcessingJobStatus | "idle">("idle");
-    const [pretranslationProgress, setPretranslationProgress] = createSignal(0);
-    const [pretranslationError, setPretranslationError] = createSignal<string | null>(null);
+    const [paragraphs, setParagraphs] = createSignal<PdfParagraphRecord[]>([]);
     const [selectionPopup, setSelectionPopup] = createSignal<{ text: string; x: number; y: number } | null>(null);
     const [selectionTranslation, setSelectionTranslation] = createSignal<string | null>(null);
     const [translatingSelection, setTranslatingSelection] = createSignal(false);
-    const [pretranslationControl, setPretranslationControl] = createSignal<"running" | "pause" | "cancel">("running");
 
     const fileName = createMemo(() => displayName(props.filePath));
     const assetUrl = createMemo(() => {
@@ -332,15 +293,7 @@ export const PdfWorkspace: Component<{
         setIndexProgress(0);
         setSearchResults([]);
         setActiveResult(null);
-        setPaperId(null);
         setParagraphs([]);
-        setAnalyses([]);
-        setQueuedReference(null);
-        setPaperAiEnabled(false);
-        setActiveEvidence(null);
-        setPretranslationStatus("idle");
-        setPretranslationProgress(0);
-        setPretranslationError(null);
         setSelectionPopup(null);
         setSelectionTranslation(null);
         setError(null);
@@ -490,11 +443,10 @@ export const PdfWorkspace: Component<{
     ) {
         try {
             const record = await getPdfRecord(relativePath);
-            setPaperId(record.id);
             if (record.parseStatus === "ready" && record.pageCount === pdf.numPages) {
                 if (generation === loadGeneration) {
                     setIndexState("ready");
-                    await loadPaperAiData(relativePath, generation);
+                    setParagraphs(await getPdfParagraphs(relativePath));
                 }
                 return;
             }
@@ -510,30 +462,12 @@ export const PdfWorkspace: Component<{
             const summary = await indexPdfDocument(relativePath, pages);
             if (generation !== loadGeneration) return;
             setIndexState(summary.parseStatus === "requires_ocr" ? "requires_ocr" : "ready");
-            setPaperId(summary.paperId);
-            await loadPaperAiData(relativePath, generation);
+            setParagraphs(await getPdfParagraphs(relativePath));
         } catch (reason) {
             if (generation !== loadGeneration) return;
             console.error("[PdfWorkspace] failed to index PDF:", reason);
             setIndexState("failed");
         }
-    }
-
-    async function loadPaperAiData(relativePath: string, generation: number) {
-        const [nextParagraphs, nextAnalyses] = await Promise.all([
-            getPdfParagraphs(relativePath),
-            getParagraphAnalyses(relativePath),
-        ]);
-        if (generation !== loadGeneration) return;
-        setParagraphs(nextParagraphs);
-        setAnalyses(nextAnalyses);
-        const completed = nextParagraphs.filter((paragraph) =>
-            nextAnalyses.some((analysis) =>
-                analysis.paragraphId === paragraph.id && analysis.sourceHash === paragraph.sourceHash,
-            ),
-        ).length;
-        setPretranslationProgress(nextParagraphs.length ? completed / nextParagraphs.length : 0);
-        if (nextParagraphs.length && completed === nextParagraphs.length) setPretranslationStatus("completed");
     }
 
     async function fitWidth() {
@@ -624,101 +558,6 @@ export const PdfWorkspace: Component<{
         setActiveResult(null);
     }
 
-    function showEvidence(page: number, boxes: import("../services/pdf/layout").PdfBox[] | null) {
-        setActiveEvidence(boxes?.length ? { pageNumber: page, boxes } : null);
-    }
-
-    function insertReference(reference: PaperReference) {
-        setQueuedReference(reference);
-        setShowAiChat(true);
-    }
-
-    async function persistPretranslationJob(
-        status: ProcessingJobStatus,
-        progress: number,
-        errorMessage?: string,
-    ) {
-        const id = `translate-paragraphs:${paperId() ?? props.filePath}`;
-        const job = {
-            id,
-            paperId: paperId() ?? undefined,
-            type: "translate_paragraphs" as const,
-            status,
-            progress,
-            errorMessage,
-        };
-        processingJobStore.upsert(job);
-        await saveProcessingJob({
-            id,
-            paperId: job.paperId,
-            jobType: job.type,
-            status,
-            progress,
-            errorMessage,
-        });
-    }
-
-    async function startPretranslation() {
-        if (pretranslationStatus() === "running") return;
-        if (!aiStore.isConfigured()) {
-            setPretranslationError("请先在设置 → 模型接入中配置并测试 AI 模型。");
-            return;
-        }
-        const allParagraphs = paragraphs();
-        if (!allParagraphs.length) {
-            setPretranslationError("论文文字尚未识别完成。");
-            return;
-        }
-        const existing = new Map(analyses().map((analysis) => [analysis.paragraphId, analysis]));
-        const pending = allParagraphs.filter((paragraph) => {
-            const cached = existing.get(paragraph.id);
-            return !cached || cached.sourceHash !== paragraph.sourceHash;
-        });
-        if (!pending.length) {
-            setPretranslationStatus("completed");
-            setPretranslationProgress(1);
-            return;
-        }
-
-        setPretranslationControl("running");
-        setPretranslationStatus("running");
-        setPretranslationError(null);
-        let completed = allParagraphs.length - pending.length;
-        await persistPretranslationJob("running", completed / allParagraphs.length);
-        try {
-            for (const paragraph of pending) {
-                if (pretranslationControl() !== "running") break;
-                const input = await analyzePaperParagraph(paragraph, fileName(), allParagraphs);
-                const saved = await saveParagraphAnalysis(props.filePath, input);
-                setAnalyses((current) => [
-                    ...current.filter((entry) => entry.paragraphId !== saved.paragraphId),
-                    saved,
-                ].sort((a, b) => a.pageNumber - b.pageNumber || a.paragraphIndex - b.paragraphIndex));
-                completed += 1;
-                const progress = completed / allParagraphs.length;
-                setPretranslationProgress(progress);
-                await persistPretranslationJob("running", progress);
-                await new Promise<void>((resolve) => setTimeout(resolve, 0));
-            }
-            if (pretranslationControl() === "pause") {
-                setPretranslationStatus("paused");
-                await persistPretranslationJob("paused", completed / allParagraphs.length);
-            } else if (pretranslationControl() === "cancel") {
-                setPretranslationStatus("cancelled");
-                await persistPretranslationJob("cancelled", completed / allParagraphs.length);
-            } else {
-                setPretranslationStatus("completed");
-                setPretranslationProgress(1);
-                await persistPretranslationJob("completed", 1);
-            }
-        } catch (reason) {
-            const message = reason instanceof Error ? reason.message : String(reason);
-            setPretranslationError(message);
-            setPretranslationStatus("failed");
-            await persistPretranslationJob("failed", completed / allParagraphs.length, message).catch(() => undefined);
-        }
-    }
-
     function handleTextSelection(event: MouseEvent) {
         const selection = window.getSelection();
         const text = selection?.toString().trim() ?? "";
@@ -777,14 +616,6 @@ export const PdfWorkspace: Component<{
                 <Show when={indexState() === "requires_ocr"}>
                     <span style={{ color: "var(--mz-warning, #d19a66)", "font-size": "11px" }}>{t("pdf.requiresOcr")}</span>
                 </Show>
-                <button
-                    style={toolbarButtonStyle()}
-                    classList={{ "is-active": showCards() }}
-                    title="显示或隐藏段落要点卡片"
-                    onClick={() => setShowCards((value) => !value)}
-                >
-                    卡片
-                </button>
                 <div style={{ display: "flex", "align-items": "center", gap: "4px" }}>
                     <input type="search" value={searchQuery()} placeholder={t("pdf.searchPlaceholder")} onInput={(event) => setSearchQuery(event.currentTarget.value)} onFocus={() => setShowSearch(true)} onKeyDown={(event) => { if (event.key === "Enter") void performSearch(); if (event.key === "Escape") closeSearchResults(); }} style={{ width: "170px", height: "30px", padding: "0 8px", border: "1px solid var(--mz-border)", "border-radius": "var(--mz-radius-sm)", background: "var(--mz-bg-primary)", color: "var(--mz-text-primary)", "font-size": "12px" }} />
                     <button style={toolbarButtonStyle(searching())} disabled={searching()} onClick={() => void performSearch()}>{t("pdf.search")}</button>
@@ -810,30 +641,17 @@ export const PdfWorkspace: Component<{
                     <Show when={!loading() && !error()} fallback={<div style={{ height: "100%", display: "flex", "align-items": "center", "justify-content": "center", color: error() ? "var(--mz-danger, #e06c75)" : "var(--mz-text-muted)", "font-size": "var(--mz-font-size-sm)", "white-space": "pre-wrap", "text-align": "center" }}>{error() ?? t("pdf.loading")}</div>}>
                         <Show when={readingMode() === "continuous"} fallback={
                             <div style={{ width: "max-content", "min-width": "100%", display: "flex", "justify-content": "center", "align-items": "flex-start" }}>
-                                <div class="mz-pdf-page-with-cards">
+                                <div class="mz-pdf-page">
                                     <div class="mz-pdf-page-surface">
                                     <canvas ref={canvasRef} aria-label={t("pdf.pageCanvas", { page: pageNumber() })} style={{ display: "block" }} />
                                     <div ref={textLayerRef} class="mz-pdf-text-layer" aria-label={t("pdf.textLayer")} />
                                     <Show when={activeResult()?.pageNumber === pageNumber()}>
                                         <PdfHighlightOverlay boxes={activeResult()?.boxes ?? []} kind="search" />
                                     </Show>
-                                    <Show when={activeEvidence()?.pageNumber === pageNumber()}>
-                                        <PdfHighlightOverlay boxes={activeEvidence()?.boxes ?? []} kind="evidence" />
-                                    </Show>
                                     <Show when={rendering()}>
                                         <div style={{ position: "absolute", inset: "0", display: "flex", "align-items": "center", "justify-content": "center", background: "rgba(255,255,255,0.55)", color: "#333", "font-size": "13px", "line-height": "1.4" }}>{t("pdf.rendering")}</div>
                                     </Show>
                                     </div>
-                                    <Show when={paperAiEnabled() && showCards() && analyses().length > 0}>
-                                        <ParagraphCardLane
-                                            pageNumber={pageNumber()}
-                                            pageHeight={(canvasRef?.getBoundingClientRect().height || estimatedPageSize().height * zoom())}
-                                            paragraphs={paragraphs()}
-                                            analyses={analyses()}
-                                            onEvidenceChange={(boxes) => showEvidence(pageNumber(), boxes)}
-                                            onInsertReference={insertReference}
-                                        />
-                                    </Show>
                                 </div>
                             </div>
                         }>
@@ -848,12 +666,6 @@ export const PdfWorkspace: Component<{
                                             activeResult={activeResult()}
                                             estimatedWidth={estimatedPageSize().width}
                                             estimatedHeight={estimatedPageSize().height}
-                                            paragraphs={paragraphs()}
-                                            analyses={analyses()}
-                                            showCards={paperAiEnabled() && showCards() && analyses().length > 0}
-                                            evidenceBoxes={activeEvidence()?.pageNumber === number ? activeEvidence()?.boxes ?? [] : []}
-                                            onEvidenceChange={showEvidence}
-                                            onInsertReference={insertReference}
                                         />
                                     )}
                                 </For>
@@ -885,13 +697,6 @@ export const PdfWorkspace: Component<{
                         relativePath={props.filePath}
                         title={fileName()}
                         paragraphs={paragraphs()}
-                        translationStatus={pretranslationStatus()}
-                        translationProgress={pretranslationProgress()}
-                        translationError={pretranslationError()}
-                        onGenerateCards={startPretranslation}
-                        onContextStateChange={setPaperAiEnabled}
-                        queuedReference={queuedReference()}
-                        onReferenceConsumed={() => setQueuedReference(null)}
                         onClose={() => setShowAiChat(false)}
                     />
                 </Show>
@@ -903,9 +708,6 @@ export const PdfWorkspace: Component<{
                     onClick={() => setShowAiChat(true)}
                 >
                     <span>AI 阅读</span>
-                    <Show when={pretranslationStatus() === "running"}>
-                        <small>{Math.round(pretranslationProgress() * 100)}%</small>
-                    </Show>
                 </button>
             </Show>
             <Show when={selectionPopup()}>
@@ -913,7 +715,7 @@ export const PdfWorkspace: Component<{
                     <div class="mz-pdf-selection-popup" style={{ left: `${popup().x}px`, top: `${popup().y}px` }}>
                         <div class="mz-pdf-selection-actions">
                             <button disabled={translatingSelection()} onClick={() => void translateSelection()}>{translatingSelection() ? "翻译中…" : "翻译"}</button>
-                            <button onClick={() => insertReference({ label: "选中的原文", text: popup().text })}>引用到 AI</button>
+                            <button onClick={() => setShowAiChat(true)}>打开论文 AI</button>
                             <button onClick={() => { setSelectionPopup(null); setSelectionTranslation(null); }}>×</button>
                         </div>
                         <Show when={selectionTranslation()}>

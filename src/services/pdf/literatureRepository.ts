@@ -37,35 +37,6 @@ export interface PdfParagraphRecord {
     boxes: PdfBox[];
 }
 
-export interface EvidenceRef {
-    startOffset: number;
-    endOffset: number;
-    quote: string;
-}
-
-export interface ParagraphKeyPoint {
-    label: string;
-    evidence: EvidenceRef[];
-}
-
-export interface ParagraphAnalysisInput {
-    paragraphId: string;
-    translation: string;
-    summary: string;
-    keyPoints: ParagraphKeyPoint[];
-    provider: string;
-    model: string;
-    promptVersion: string;
-}
-
-export interface ParagraphAnalysisRecord extends ParagraphAnalysisInput {
-    paperId: string;
-    pageNumber: number;
-    paragraphIndex: number;
-    sourceHash: string;
-    updatedAt: string;
-}
-
 export interface PaperReference {
     paragraphId?: string;
     pageNumber?: number;
@@ -75,7 +46,7 @@ export interface PaperReference {
 
 export interface PaperChatMessage {
     id: string;
-    role: "user" | "assistant";
+    role: "system" | "user" | "assistant";
     content: string;
     references: PaperReference[];
     createdAt: string;
@@ -123,17 +94,6 @@ export function getPdfParagraphs(relativePath: string): Promise<PdfParagraphReco
     return invoke("get_pdf_paragraphs", { relativePath });
 }
 
-export function getParagraphAnalyses(relativePath: string): Promise<ParagraphAnalysisRecord[]> {
-    return invoke("get_paragraph_analyses", { relativePath });
-}
-
-export function saveParagraphAnalysis(
-    relativePath: string,
-    analysis: ParagraphAnalysisInput,
-): Promise<ParagraphAnalysisRecord> {
-    return invoke("save_paragraph_analysis", { relativePath, analysis });
-}
-
 export function getPaperChatSession(relativePath: string): Promise<PaperChatSession> {
     return invoke("get_paper_chat_session", { relativePath });
 }
@@ -144,15 +104,4 @@ export function savePaperChatSession(
     contextInjected: boolean,
 ): Promise<PaperChatSession> {
     return invoke("save_paper_chat_session", { relativePath, messages, contextInjected });
-}
-
-export function saveProcessingJob(job: {
-    id: string;
-    paperId?: string;
-    jobType: string;
-    status: string;
-    progress: number;
-    errorMessage?: string;
-}): Promise<void> {
-    return invoke("save_processing_job", { job });
 }

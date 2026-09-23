@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal, on, type Component } from "solid-js";
 import { aiStore } from "../../stores/ai";
-import { chatWithPaper } from "../../services/pdf/paperAiService";
+import { buildPaperContext, chatWithPaper } from "../../services/pdf/paperAiService";
 import {
     getPaperChatSession,
     savePaperChatSession,
@@ -8,7 +8,6 @@ import {
     type PaperReference,
     type PdfParagraphRecord,
 } from "../../services/pdf/literatureRepository";
-import { PAPER_REFERENCE_MIME } from "./ParagraphCardLane";
 
 function messageId() {
     return crypto.randomUUID();
@@ -18,13 +17,7 @@ export const PdfAiChatPanel: Component<{
     relativePath: string;
     title: string;
     paragraphs: PdfParagraphRecord[];
-    queuedReference: PaperReference | null;
-    translationStatus: string;
-    translationProgress: number;
-    translationError: string | null;
-    onGenerateCards: () => Promise<void>;
     onContextStateChange?: (enabled: boolean) => void;
-    onReferenceConsumed: () => void;
     onClose: () => void;
 }> = (props) => {
     let inputRef: HTMLTextAreaElement | undefined;
@@ -59,14 +52,6 @@ export const PdfAiChatPanel: Component<{
     }, { defer: false }));
 
     createEffect(() => {
-        const reference = props.queuedReference;
-        if (!reference) return;
-        addReference(reference);
-        props.onReferenceConsumed();
-        inputRef?.focus();
-    });
-
-    createEffect(() => {
         messages();
         requestAnimationFrame(() => {
             if (messageListRef) messageListRef.scrollTop = messageListRef.scrollHeight;
@@ -82,16 +67,6 @@ export const PdfAiChatPanel: Component<{
     function handleDrop(event: DragEvent) {
         event.preventDefault();
         setDragging(false);
-        const encoded = event.dataTransfer?.getData(PAPER_REFERENCE_MIME);
-        if (encoded) {
-            try {
-                addReference(JSON.parse(encoded) as PaperReference);
-                inputRef?.focus();
-                return;
-            } catch {
-                // Fall through to plain text.
-            }
-        }
         const text = event.dataTransfer?.getData("text/plain")?.trim();
         if (text) addReference({ label: "拖拽的原文", text });
     }
@@ -121,6 +96,15 @@ export const PdfAiChatPanel: Component<{
             createdAt: new Date().toISOString(),
         };
         const history = messages();
+        const sessionHistory = history.some((message) => message.role === "system")
+            ? history
+            : [{
+                id: `paper-context:${props.relativePath}`,
+                role: "system" as const,
+                content: buildPaperContext(props.title, props.paragraphs),
+                references: [],
+                createdAt: new Date().toISOString(),
+            }, ...history];
         const assistantMessage: PaperChatMessage = {
             id: messageId(),
             role: "assistant",
@@ -128,7 +112,7 @@ export const PdfAiChatPanel: Component<{
             references: [],
             createdAt: new Date().toISOString(),
         };
-        const withUser = [...history, userMessage];
+        const withUser = [...sessionHistory, userMessage];
         setMessages([...withUser, assistantMessage]);
         setInput("");
         setReferences([]);
@@ -141,7 +125,7 @@ export const PdfAiChatPanel: Component<{
             const answer = await chatWithPaper(
                 props.title,
                 props.paragraphs,
-                history,
+                sessionHistory,
                 userContent,
                 attached,
                 (_chunk, fullMessage) => {
@@ -220,7 +204,7 @@ export const PdfAiChatPanel: Component<{
                     <div class="mz-pdf-ai-consent-icon">AI</div>
                     <strong>是否启用「{aiStore.currentModelLabel() || "未配置模型"}」？</strong>
                     <p>启用后会像 Vibero 一样，在首次提问时把已识别的论文全文加入当前会话，后续对话沿用会话历史。</p>
-                    <p class="mz-pdf-ai-consent-note">启用本身不会调用模型，也不会生成总结卡片；发送问题时论文正文会发送给当前配置的模型服务商。</p>
+                    <p class="mz-pdf-ai-consent-note">启用本身不会调用模型；发送问题时论文正文会发送给当前配置的模型服务商。</p>
                     <div>
                         <button onClick={props.onClose}>暂不启用</button>
                         <button disabled={enabling()} onClick={() => void enablePaperAi()}>{enabling() ? "正在启用…" : "启用"}</button>
@@ -230,32 +214,18 @@ export const PdfAiChatPanel: Component<{
             }>
             <div class="mz-pdf-ai-background-status">
                 <span>{messages().length ? "论文全文会话已启用" : "首次提问时注入全文"}</span>
-                <Show when={props.translationStatus === "running"} fallback={
-                    <button
-                        classList={{ "is-error": props.translationStatus === "failed" }}
-                        title={props.translationError ?? "明确启动后才会生成逐段翻译、摘要和证据标签"}
-                        onClick={() => void props.onGenerateCards()}
-                    >
-                        {props.translationStatus === "completed"
-                            ? "重新生成总结卡片"
-                            : props.translationStatus === "failed"
-                                ? "重试总结卡片"
-                                : "生成总结卡片"}
-                    </button>
-                }>
-                    <span>总结卡片 {Math.round(props.translationProgress * 100)}%</span>
-                </Show>
             </div>
             <div ref={messageListRef} class="mz-pdf-ai-messages">
                 <Show when={messages().length} fallback={
                     <div class="mz-pdf-ai-empty">
                         <strong>基于论文全文提问</strong>
                         <p>首次发送时会注入已识别的全文，共 {props.paragraphs.length} 个段落。</p>
-                        <p>可以把段落卡片、要点标签或选中的原文拖到这里。</p>
+                        <p>也可以把选中的原文拖到这里作为问题上下文。</p>
                     </div>
                 }>
                     <For each={messages()}>
                         {(message) => (
+                            <Show when={message.role !== "system"}>
                             <article class={`mz-pdf-ai-message is-${message.role}`}>
                                 <div class="mz-pdf-ai-message-role">{message.role === "user" ? "你" : "AI"}</div>
                                 <div class="mz-pdf-ai-message-content">{message.content || (loading() && message.role === "assistant" ? "正在思考…" : "")}</div>
@@ -265,6 +235,7 @@ export const PdfAiChatPanel: Component<{
                                     )}
                                 </For>
                             </article>
+                            </Show>
                         )}
                     </For>
                 </Show>

@@ -649,7 +649,7 @@ impl LiteratureRepository {
     ) -> KernelResult<PaperChatSession> {
         if messages
             .iter()
-            .any(|message| !matches!(message.role.as_str(), "user" | "assistant"))
+            .any(|message| !matches!(message.role.as_str(), "system" | "user" | "assistant"))
         {
             return Err(KernelError::Database(
                 "Paper chat messages must use user or assistant roles".into(),
