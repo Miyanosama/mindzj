@@ -39,6 +39,7 @@ import "./styles/themes/papercolor-light.css";
 import "./styles/themes/solarized-light.css";
 import "./styles/themes/solarized-dark.css";
 import "./styles/editor.css";
+import "./styles/pdf.css";
 import App from "./App";
 import { installPlatformAttributes } from "./utils/platform";
 

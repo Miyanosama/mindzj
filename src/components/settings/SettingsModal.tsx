@@ -165,6 +165,10 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
     const [aiAddingModel, setAiAddingModel] = createSignal(false);
     const [aiAddModelDraft, setAiAddModelDraft] = createSignal("");
     const [aiAddEndpointDraft, setAiAddEndpointDraft] = createSignal("");
+    const [aiDiscoveredModels, setAiDiscoveredModels] = createSignal<
+        { value: string; label: string }[]
+    >([]);
+    const [aiDiscoveringModels, setAiDiscoveringModels] = createSignal(false);
     const [aiSkillEditingId, setAiSkillEditingId] = createSignal<string | null>(
         null,
     );
@@ -173,7 +177,6 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
         createSignal("");
     const [aiSkillContentDraft, setAiSkillContentDraft] = createSignal("");
     let modalRootRef: HTMLDivElement | undefined;
-    let aiApiKeyLoadToken = 0;
 
     function handleKeydown(e: KeyboardEvent) {
         if (e.key !== "Escape") return;
@@ -333,7 +336,7 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
         return "https://api.openai.com/v1";
     };
     function loadAiApiKeyIntoDraft(config: AiProviderConfig) {
-        const token = ++aiApiKeyLoadToken;
+        setAiApiKeyDraft("");
         if (aiAddMode()) {
             setAiApiKeyVisible(false);
             return;
@@ -344,11 +347,9 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
             return;
         }
         setAiApiKeyVisible(false);
-        void aiStore.loadApiKey(config).then((key) => {
-            if (token !== aiApiKeyLoadToken) return;
-            setAiApiKeyDraft(key ?? "");
-        });
     }
+    const aiCredentialId = (config: AiProviderConfig) =>
+        config.id?.trim() || config.provider_type;
     createEffect(() => {
         loadAiApiKeyIntoDraft(aiConfig());
     });
@@ -486,7 +487,9 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
         if (aiSkillEditingId() === skill.id) resetAiSkillDrafts();
         setAiTestResult(t("settings.aiSkillDeleted"));
     }
-    async function saveAiProvider(showStatus = true): Promise<boolean> {
+    async function saveAiProvider(
+        showStatus = true,
+    ): Promise<AiProviderConfig | null> {
         const current = aiConfig();
         const providerDefault = defaultAiProviderConfig(current.provider_type);
         const next: AiProviderConfig = {
@@ -498,12 +501,15 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
         };
         if (!next.model.trim()) {
             if (showStatus) setAiTestResult(t("settings.aiModelRequired"));
-            return false;
+            return null;
         }
         const value = aiApiKeyDraft().trim();
         if (isApiKeyAiProvider(next)) {
-            next.api_key = value || null;
-            next.has_api_key = value.length > 0;
+            next.api_key = null;
+            next.has_api_key = value.length > 0 || current.has_api_key;
+            if (value) {
+                await aiStore.saveApiKey(aiCredentialId(next), value);
+            }
         }
         if (isApiKeyAiProvider(next) && isBuiltInOnlineAiProvider(next)) {
             const providers = customAiProviders();
@@ -531,10 +537,10 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
             await set("ai_custom_providers", updated);
         }
         await set("ai_provider", next);
-        setAiApiKeyDraft(value);
+        setAiApiKeyDraft("");
         setAiApiKeyVisible(false);
         if (showStatus) setAiTestResult(t("settings.aiProviderSaved"));
-        return true;
+        return next;
     }
     async function saveNewAiProvider() {
         const model = aiAddModelDraft().trim();
@@ -549,17 +555,86 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
             model,
             display_name: model,
             endpoint: endpoint || null,
-            api_key: apiKey || null,
-            has_api_key: apiKey.length > 0,
+            api_key: null,
+            has_api_key: false,
         };
         await set("ai_custom_providers", [...customAiProviders(), next]);
         await set("ai_provider", next);
+        if (apiKey) {
+            await aiStore.saveApiKey(aiCredentialId(next), apiKey);
+            next.has_api_key = true;
+        }
         setAiAddModelDraft("");
         setAiAddEndpointDraft("");
-        setAiApiKeyDraft(apiKey);
+        setAiDiscoveredModels([]);
+        setAiApiKeyDraft("");
         setAiApiKeyVisible(false);
         setAiAddingModel(false);
         setAiTestResult(t("settings.aiProviderSaved"));
+    }
+    async function discoverAiModels() {
+        const endpoint = aiAddEndpointDraft().trim();
+        const apiKey = aiApiKeyDraft().trim();
+        if (!endpoint) {
+            setAiTestResult(t("settings.aiEndpointRequired"));
+            return;
+        }
+        if (!apiKey) {
+            setAiTestResult(t("settings.aiApiKeyRequired"));
+            return;
+        }
+        setAiDiscoveringModels(true);
+        setAiTestResult(t("settings.aiDiscoveringModels"));
+        try {
+            const result = await invoke<{
+                models: { id: string; displayName: string }[];
+            }>("discover_ai_provider_models", {
+                request: { endpoint, apiKey },
+            });
+            const options = result.models.map((model) => ({
+                value: model.id,
+                label:
+                    model.displayName && model.displayName !== model.id
+                        ? `${model.displayName} (${model.id})`
+                        : model.id,
+            }));
+            setAiDiscoveredModels(options);
+            if (
+                !options.some(
+                    (option) => option.value === aiAddModelDraft().trim(),
+                )
+            ) {
+                setAiAddModelDraft(options[0]?.value ?? "");
+            }
+            setAiTestResult(
+                t("settings.aiModelsDiscovered", { count: options.length }),
+            );
+        } catch (error: any) {
+            const message =
+                typeof error === "string"
+                    ? error
+                    : error?.message || JSON.stringify(error);
+            setAiTestResult(
+                `${t("settings.aiModelDiscoveryFailed")}: ${message}`,
+            );
+        } finally {
+            setAiDiscoveringModels(false);
+        }
+    }
+    async function clearAiApiKey() {
+        const current = aiConfig();
+        await aiStore.saveApiKey(aiCredentialId(current), "");
+        const next = { ...current, api_key: null, has_api_key: false };
+        await set("ai_provider", next);
+        const providers = customAiProviders().map((config) =>
+            aiCredentialId(config) === aiCredentialId(current)
+                ? { ...config, api_key: null, has_api_key: false }
+                : config,
+        );
+        await set("ai_custom_providers", providers);
+        setAiApiKeyDraft("");
+        setAiApiKeyVisible(false);
+        setAiTestResult(t("settings.aiApiKeyCleared"));
     }
     async function deleteAiProvider() {
         const current = aiConfig();
@@ -574,6 +649,7 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
             { confirmLabel: t("common.delete"), variant: "danger" },
         );
         if (!confirmed) return;
+        await aiStore.saveApiKey(aiCredentialId(current), "");
         await set(
             "ai_custom_providers",
             customAiProviders().filter((config) => config.id !== current.id),
@@ -587,14 +663,16 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
     async function testAiConfig() {
         setAiTestResult(t("settings.aiTesting"));
         try {
+            let config = aiConfig();
             if (isApiKeyAiProvider()) {
                 const saved = await saveAiProvider(false);
                 if (!saved) {
                     setAiTestResult(t("settings.aiModelRequired"));
                     return;
                 }
+                config = saved;
             }
-            const result = await aiStore.testConnection(aiConfig());
+            const result = await aiStore.testConnection(config);
             const lines = [t("settings.aiConnected")];
             if (result.model) {
                 lines.push(
@@ -1275,6 +1353,7 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                         setAiAddingModel(true);
                                         setAiAddModelDraft("");
                                         setAiAddEndpointDraft("");
+                                        setAiDiscoveredModels([]);
                                         setAiApiKeyDraft("");
                                         setAiApiKeyVisible(false);
                                         setAiTestResult(null);
@@ -1390,7 +1469,9 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                                 value={aiApiKeyDraft()}
                                                 visible={aiApiKeyVisible()}
                                                 placeholder={t(
-                                                    "settings.aiApiKeyPlaceholder",
+                                                    aiConfig().has_api_key
+                                                        ? "settings.aiApiKeyReplacePlaceholder"
+                                                        : "settings.aiApiKeyPlaceholder",
                                                 )}
                                                 width="290px"
                                                 onChange={setAiApiKeyDraft}
@@ -1435,6 +1516,13 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                                 padding: "14px 0 4px",
                                             }}>
                                             <Show when={isApiKeyAiProvider()}>
+                                                <Show when={aiConfig().has_api_key}>
+                                                    <button
+                                                        onClick={() => void clearAiApiKey()}
+                                                        style={settingsDangerButtonStyle}>
+                                                        {t("settings.aiClearApiKey")}
+                                                    </button>
+                                                </Show>
                                                 <Show
                                                     when={activeCustomProviderSaved()}>
                                                     <button
@@ -1467,18 +1555,33 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                         </div>
                                     </>
                                 }>
-                                <SettingInput
-                                    label={t("settings.aiModel")}
-                                    description={t(
-                                        "settings.aiModelDescription",
-                                    )}
-                                    value={aiAddModelDraft()}
-                                    placeholder={t(
-                                        "settings.aiModelPlaceholder",
-                                    )}
-                                    width="360px"
-                                    onChange={setAiAddModelDraft}
-                                />
+                                <Show
+                                    when={aiDiscoveredModels().length > 0}
+                                    fallback={
+                                        <SettingInput
+                                            label={t("settings.aiModel")}
+                                            description={t(
+                                                "settings.aiModelDescription",
+                                            )}
+                                            value={aiAddModelDraft()}
+                                            placeholder={t(
+                                                "settings.aiModelPlaceholder",
+                                            )}
+                                            width="360px"
+                                            onChange={setAiAddModelDraft}
+                                        />
+                                    }>
+                                    <SettingSelect
+                                        label={t("settings.aiModel")}
+                                        description={t(
+                                            "settings.aiDiscoveredModelDescription",
+                                        )}
+                                        value={aiAddModelDraft()}
+                                        options={aiDiscoveredModels()}
+                                        width="360px"
+                                        onChange={setAiAddModelDraft}
+                                    />
+                                </Show>
                                 <AiApiKeyInput
                                     label={t("settings.aiApiKey")}
                                     description={t(
@@ -1490,7 +1593,11 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                         "settings.aiApiKeyPlaceholder",
                                     )}
                                     width="360px"
-                                    onChange={setAiApiKeyDraft}
+                                    onChange={(value) => {
+                                        setAiApiKeyDraft(value);
+                                        setAiDiscoveredModels([]);
+                                        setAiTestResult(null);
+                                    }}
                                     onToggleVisible={() =>
                                         setAiApiKeyVisible((value) => !value)
                                     }
@@ -1505,9 +1612,33 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                     width="360px"
                                     onChange={(value) => {
                                         setAiAddEndpointDraft(value.trim());
+                                        setAiDiscoveredModels([]);
                                         setAiTestResult(null);
                                     }}
                                 />
+                                <div
+                                    style={{
+                                        display: "flex",
+                                        "justify-content": "flex-end",
+                                        padding: "10px 0 0",
+                                    }}>
+                                    <button
+                                        disabled={aiDiscoveringModels()}
+                                        onClick={() => void discoverAiModels()}
+                                        style={{
+                                            ...settingsButtonStyle,
+                                            opacity: aiDiscoveringModels()
+                                                ? "0.65"
+                                                : "1",
+                                            cursor: aiDiscoveringModels()
+                                                ? "wait"
+                                                : "pointer",
+                                        }}>
+                                        {aiDiscoveringModels()
+                                            ? t("settings.aiDiscoveringModels")
+                                            : t("settings.aiFetchModels")}
+                                    </button>
+                                </div>
                                 <div
                                     style={{
                                         display: "flex",
@@ -1520,6 +1651,7 @@ export const SettingsModal: Component<SettingsModalProps> = (props) => {
                                             setAiAddingModel(false);
                                             setAiAddModelDraft("");
                                             setAiAddEndpointDraft("");
+                                            setAiDiscoveredModels([]);
                                             setAiApiKeyDraft("");
                                             setAiApiKeyVisible(false);
                                             setAiTestResult(null);

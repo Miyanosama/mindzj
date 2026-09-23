@@ -374,10 +374,6 @@ function normalizeAiConfig(config: unknown): AiProviderConfig | null {
     if (!config || typeof config !== "object") return null;
     const raw = config as Partial<AiProviderConfig>;
     const providerType = normalizeAiProviderType(raw.provider_type);
-    const apiKey =
-        typeof raw.api_key === "string" && raw.api_key.trim()
-            ? raw.api_key.trim()
-            : null;
     return {
         id: typeof raw.id === "string" && raw.id.trim() ? raw.id : null,
         display_name:
@@ -389,8 +385,8 @@ function normalizeAiConfig(config: unknown): AiProviderConfig | null {
             typeof raw.endpoint === "string" && raw.endpoint.trim()
                 ? raw.endpoint.trim()
                 : null,
-        api_key: apiKey,
-        has_api_key: !!raw.has_api_key || !!apiKey,
+        api_key: null,
+        has_api_key: !!raw.has_api_key,
         model: typeof raw.model === "string" ? raw.model : "",
     };
 }
@@ -532,9 +528,17 @@ function normalizeLoadedSettings(
 }
 
 function serializeSettingsForBackend(settings: AppSettings) {
+    const withoutSecret = (config: AiProviderConfig): AiProviderConfig => ({
+        ...config,
+        api_key: null,
+    });
     return {
         ...settings,
         theme: serializeTheme(settings.theme),
+        ai_provider: settings.ai_provider
+            ? withoutSecret(settings.ai_provider)
+            : null,
+        ai_custom_providers: settings.ai_custom_providers.map(withoutSecret),
     };
 }
 

@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "MindZJ AI 文献阅读器目标架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1380, 820],
+    "repository": {
+      "url": "https://github.com/Miyanosama/mindzj.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "4f7b494cc91bdc1a89102811dc0b48fe12adba0e"
+    },
+    "views": [
+      {
+        "id": "reading",
+        "label": "阅读交互",
+        "focus": ["library", "reader", "ai_panel", "tauri_api"],
+        "note": "论文、翻译卡片、要点标签和 AI 对话共享同一文档定位模型。"
+      },
+      {
+        "id": "ingestion",
+        "label": "导入与预处理",
+        "focus": ["tauri_api", "ingestion", "jobs", "vault", "sqlite"],
+        "note": "导入文件后异步完成文本、版面、图片与段落级锚点提取。"
+      },
+      {
+        "id": "ai",
+        "label": "AI 处理链",
+        "focus": ["ai_panel", "ai_orchestrator", "jobs", "sqlite", "providers"],
+        "note": "统一模型适配器支持聊天、翻译、摘要和可追溯原文证据。"
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "library",
+      "type": "frontend",
+      "label": "文献库与分类",
+      "sublabel": "文件夹 / 标签 / 附件",
+      "pos": [40, 290],
+      "size": [170, 76],
+      "sources": [{"path": "src/components/sidebar/FileTree.tsx", "label": "现有文件树"}]
+    },
+    {
+      "id": "reader",
+      "type": "frontend",
+      "label": "PDF 阅读工作台",
+      "sublabel": "页面 + 段落卡片 + 高亮",
+      "tag": "PDF.js",
+      "pos": [280, 170],
+      "size": [200, 86]
+    },
+    {
+      "id": "ai_panel",
+      "type": "frontend",
+      "label": "AI Chat 侧栏",
+      "sublabel": "论文上下文 / 引用跳转",
+      "pos": [280, 420],
+      "size": [200, 80],
+      "sources": [{"path": "src/stores/ai.ts", "label": "现有 AI 状态"}]
+    },
+    {
+      "id": "tauri_api",
+      "type": "backend",
+      "label": "Tauri 命令层",
+      "sublabel": "类型化 IPC / 事件推送",
+      "pos": [560, 290],
+      "size": [180, 80],
+      "sources": [{"path": "src-tauri/src/api/mod.rs", "label": "现有 API 边界"}]
+    },
+    {
+      "id": "ingestion",
+      "type": "backend",
+      "label": "文档解析引擎",
+      "sublabel": "PDF 版面 / 段落 / 图片",
+      "tag": "坐标可追溯",
+      "pos": [820, 100],
+      "size": [190, 82]
+    },
+    {
+      "id": "ai_orchestrator",
+      "type": "backend",
+      "label": "AI 编排与模型适配",
+      "sublabel": "Chat / 翻译 / 摘要 / 重试",
+      "pos": [820, 290],
+      "size": [190, 86],
+      "sources": [{"path": "src-tauri/src/api/settings_api.rs", "label": "现有 AI HTTP 代理"}]
+    },
+    {
+      "id": "jobs",
+      "type": "messagebus",
+      "label": "本地任务队列",
+      "sublabel": "可恢复 / 可取消 / 增量执行",
+      "pos": [820, 500],
+      "size": [190, 80]
+    },
+    {
+      "id": "vault",
+      "type": "database",
+      "label": "Vault 文件存储",
+      "sublabel": "PDF / 图片 / 视频 / 导出物",
+      "pos": [1090, 100],
+      "size": [190, 82],
+      "sources": [{"path": "src-tauri/src/kernel/vault.rs", "label": "现有安全文件层"}]
+    },
+    {
+      "id": "sqlite",
+      "type": "database",
+      "label": "SQLite 元数据与派生结果",
+      "sublabel": "段落 / 锚点 / 翻译 / 摘要 / 对话",
+      "tag": "schema versioned",
+      "pos": [1090, 330],
+      "size": [220, 92]
+    },
+    {
+      "id": "providers",
+      "type": "external",
+      "label": "模型提供商",
+      "sublabel": "OpenAI / Anthropic / DeepSeek / Ollama",
+      "pos": [1090, 570],
+      "size": [220, 80]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "本地桌面应用与本地数据边界",
+      "wraps": ["library", "reader", "ai_panel", "tauri_api", "ingestion", "ai_orchestrator", "jobs", "vault", "sqlite"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    {"id": "library-open", "from": "library", "to": "reader", "label": "打开论文与附件", "variant": "emphasis", "labelAt": [245, 270]},
+    {"id": "reader-api", "from": "reader", "to": "tauri_api", "label": "页面、段落与高亮", "labelAt": [520, 270]},
+    {"id": "chat-api", "from": "ai_panel", "to": "tauri_api", "label": "提问与引用定位"},
+    {"id": "api-ingest", "from": "tauri_api", "to": "ingestion", "label": "导入 / 重解析"},
+    {"id": "api-ai", "from": "tauri_api", "to": "ai_orchestrator", "label": "聊天 / 翻译 / 摘要", "variant": "emphasis", "labelAt": [715, 270]},
+    {"id": "api-jobs", "from": "tauri_api", "to": "jobs", "label": "创建与控制任务", "variant": "dashed"},
+    {"id": "ingest-vault", "from": "ingestion", "to": "vault", "label": "原文件与提取资源", "labelAt": [1050, 196]},
+    {"id": "ingest-db", "from": "ingestion", "to": "sqlite", "label": "段落文本 + 坐标锚点", "fromSide": "bottom", "toSide": "top"},
+    {"id": "jobs-ai", "from": "jobs", "to": "ai_orchestrator", "label": "批量预翻译与摘要"},
+    {"id": "ai-db", "from": "ai_orchestrator", "to": "sqlite", "label": "上下文读取 / 结果缓存", "labelAt": [700, 436]},
+    {"id": "ai-provider", "from": "ai_orchestrator", "to": "providers", "label": "统一 Provider API", "variant": "security", "fromSide": "bottom", "toSide": "left"}
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "关键数据原则",
+      "items": ["原始附件留在 Vault，结构化派生数据进入 SQLite", "每个 AI 结论必须保存模型版本、提示词版本与原文锚点"]
+    },
+    {
+      "dot": "emerald",
+      "title": "阅读体验核心",
+      "items": ["段落 ID 同时连接 PDF 坐标、翻译卡片和摘要标签", "点击引用或悬浮标签都能回到可验证原文"]
+    },
+    {
+      "dot": "amber",
+      "title": "实施策略",
+      "items": ["先支持可复制文字的 PDF，再增加 OCR", "长任务异步执行，可暂停、重试并按内容哈希复用结果"]
+    }
+  ]
+}

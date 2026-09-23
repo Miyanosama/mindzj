@@ -1,5 +1,6 @@
 mod api;
 mod kernel;
+mod literature;
 // Kept on disk for reference / rollback but NOT installed at startup.
 // The low-level WH_KEYBOARD_LL hook used to install here was the only
 // in-process way to claim Ctrl+Alt+Left/Right tab-switching against
@@ -47,11 +48,7 @@ fn apply_hires_icon(window: &tauri::WebviewWindow) {
     match tauri::image::Image::from_bytes(APP_ICON_PNG) {
         Ok(icon) => {
             if let Err(e) = window.set_icon(icon) {
-                tracing::warn!(
-                    "set_icon failed for window '{}': {}",
-                    window.label(),
-                    e
-                );
+                tracing::warn!("set_icon failed for window '{}': {}", window.label(), e);
             }
         }
         Err(e) => {
@@ -87,9 +84,7 @@ fn apply_hires_icon(window: &tauri::WebviewWindow) {
 /// keeps working, just with the default WebView2 settings.
 #[cfg(windows)]
 fn disable_webview2_browser_accelerator_keys(window: &tauri::WebviewWindow) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2Settings3, ICoreWebView2_2,
-    };
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Settings3, ICoreWebView2_2};
     // NOTE: `windows_core::Interface` — NOT `windows::core::Interface` —
     // because `webview2-com-sys 0.38` was generated against
     // `windows-core 0.61` and its COM interfaces only implement
@@ -273,10 +268,7 @@ async fn export_current_webview_to_pdf(
         let printable = match core_webview.cast::<ICoreWebView2_7>() {
             Ok(value) => value,
             Err(e) => {
-                let _ = setup_tx.send(Err(format!(
-                    "WebView2 PrintToPdf is unavailable: {:?}",
-                    e
-                )));
+                let _ = setup_tx.send(Err(format!("WebView2 PrintToPdf is unavailable: {:?}", e)));
                 return;
             }
         };
@@ -328,7 +320,8 @@ async fn export_current_webview_to_pdf(
         }));
 
         let output = CoTaskMemPWSTR::from(output_path.as_str());
-        if let Err(e) = printable.PrintToPdf(*output.as_ref().as_pcwstr(), &print_settings, &handler)
+        if let Err(e) =
+            printable.PrintToPdf(*output.as_ref().as_pcwstr(), &print_settings, &handler)
         {
             let _ = tx.send(Err(format!("PrintToPdf scheduling failed: {:?}", e)));
         }
@@ -337,10 +330,7 @@ async fn export_current_webview_to_pdf(
     if let Err(e) = schedule_result {
         return Err(CommandError {
             code: "PDF_EXPORT_WEBVIEW_ERROR".into(),
-            message: format!(
-                "Failed to access WebView2 for window '{}': {:?}",
-                label, e
-            ),
+            message: format!("Failed to access WebView2 for window '{}': {:?}", label, e),
         });
     }
 
@@ -490,19 +480,20 @@ async fn open_vault_window(
         .map(|(w, h)| (w as f64, h as f64))
         .unwrap_or((1080.0, 720.0));
 
-    let mut builder = WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_path.into()))
-        .title(format!("MindZJ — {}", vault_name))
-        .inner_size(w, h)
-        .min_inner_size(480.0, 320.0)
-        .resizable(true)
-        .decorations(false)
-        // Paint the native window AND webview backbuffer dark to match
-        // the theme. Without this, there's a brief white flash both on
-        // startup (before WebView2's first paint) and during window
-        // resize (where WebView2 lags the window geometry by a frame).
-        .background_color(tauri::window::Color(30, 30, 30, 255))
-        .additional_browser_args(WEBVIEW2_BROWSER_ARGS)
-        .visible(false);
+    let mut builder =
+        WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_path.into()))
+            .title(format!("MindZJ — {}", vault_name))
+            .inner_size(w, h)
+            .min_inner_size(480.0, 320.0)
+            .resizable(true)
+            .decorations(false)
+            // Paint the native window AND webview backbuffer dark to match
+            // the theme. Without this, there's a brief white flash both on
+            // startup (before WebView2's first paint) and during window
+            // resize (where WebView2 lags the window geometry by a frame).
+            .background_color(tauri::window::Color(30, 30, 30, 255))
+            .additional_browser_args(WEBVIEW2_BROWSER_ARGS)
+            .visible(false);
     if let Some(ref s) = saved_state {
         if let (Some(x), Some(y)) = (s.x, s.y) {
             builder = builder.position(x as f64, y as f64);
@@ -648,24 +639,21 @@ async fn open_file_in_split_window(
         .unwrap_or(0);
     let label = format!("split_{}_{}", direction, ts);
 
-    let new_window = WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App(url_path.into()),
-    )
-    .title(format!("MindZJ — {}", vault_name))
-    .inner_size(new_w, new_h)
-    .position(new_x, new_y)
-    .min_inner_size(320.0, 240.0)
-    .resizable(true)
-    .decorations(false)
-    // Match the main window — dark native backbuffer to eliminate
-    // white flash during startup and resize.
-    .background_color(tauri::window::Color(30, 30, 30, 255))
-    .additional_browser_args(WEBVIEW2_BROWSER_ARGS)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    let new_window =
+        WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_path.into()))
+            .title(format!("MindZJ — {}", vault_name))
+            .inner_size(new_w, new_h)
+            .position(new_x, new_y)
+            .min_inner_size(320.0, 240.0)
+            .resizable(true)
+            .decorations(false)
+            // Match the main window — dark native backbuffer to eliminate
+            // white flash during startup and resize.
+            .background_color(tauri::window::Color(30, 30, 30, 255))
+            .additional_browser_args(WEBVIEW2_BROWSER_ARGS)
+            .visible(false)
+            .build()
+            .map_err(|e| e.to_string())?;
 
     apply_hires_icon(&new_window);
     #[cfg(windows)]
@@ -727,21 +715,18 @@ async fn open_image_in_new_window(
         .unwrap_or(&file_path)
         .to_string();
 
-    let new_window = WebviewWindowBuilder::new(
-        &app,
-        &label,
-        tauri::WebviewUrl::App(url_path.into()),
-    )
-    .title(format!("MindZJ — {}", file_name))
-    .inner_size(900.0, 700.0)
-    .min_inner_size(320.0, 240.0)
-    .resizable(true)
-    .decorations(false)
-    .background_color(tauri::window::Color(30, 30, 30, 255))
-    .additional_browser_args(WEBVIEW2_BROWSER_ARGS)
-    .visible(false)
-    .build()
-    .map_err(|e| e.to_string())?;
+    let new_window =
+        WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url_path.into()))
+            .title(format!("MindZJ — {}", file_name))
+            .inner_size(900.0, 700.0)
+            .min_inner_size(320.0, 240.0)
+            .resizable(true)
+            .decorations(false)
+            .background_color(tauri::window::Color(30, 30, 30, 255))
+            .additional_browser_args(WEBVIEW2_BROWSER_ARGS)
+            .visible(false)
+            .build()
+            .map_err(|e| e.to_string())?;
 
     apply_hires_icon(&new_window);
     #[cfg(windows)]
@@ -796,7 +781,11 @@ pub fn run() {
         tracing_subscriber::registry()
             .with(env_filter)
             .with(tracing_subscriber::fmt::layer())
-            .with(tracing_subscriber::fmt::layer().with_writer(non_blocking).with_ansi(false))
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(non_blocking)
+                    .with_ansi(false),
+            )
             .init();
     }
     #[cfg(not(debug_assertions))]
@@ -808,7 +797,11 @@ pub fn run() {
             .init();
     }
 
-    tracing::info!("MindZJ v{} starting — logs at {}", env!("CARGO_PKG_VERSION"), log_dir.display());
+    tracing::info!(
+        "MindZJ v{} starting — logs at {}",
+        env!("CARGO_PKG_VERSION"),
+        log_dir.display()
+    );
 
     // Install a Ctrl+C handler so pressing Ctrl+C in the terminal running
     // `tauri dev` (or otherwise receiving SIGINT) exits cleanly instead of
@@ -912,9 +905,20 @@ pub fn run() {
             api::vault_api::get_themes_dir,
             api::vault_api::write_binary_file,
             api::vault_api::read_binary_file,
+            api::vault_api::import_pdf,
             api::vault_api::reveal_in_file_manager,
             api::vault_api::open_path_in_file_manager,
             api::vault_api::open_in_default_app,
+            // Literature API
+            api::literature_api::get_pdf_record,
+            api::literature_api::index_pdf_document,
+            api::literature_api::search_pdf_document,
+            api::literature_api::get_pdf_paragraphs,
+            api::literature_api::get_paragraph_analyses,
+            api::literature_api::save_paragraph_analysis,
+            api::literature_api::get_paper_chat_session,
+            api::literature_api::save_paper_chat_session,
+            api::literature_api::save_processing_job,
             // Search & Link API
             api::search_api::search_vault,
             api::search_api::get_forward_links,
@@ -929,7 +933,10 @@ pub fn run() {
             api::settings_api::set_view_mode,
             api::settings_api::get_ai_api_key,
             api::settings_api::set_ai_api_key,
+            api::settings_api::discover_ai_provider_models,
+            api::settings_api::test_ai_provider_connection,
             api::settings_api::ai_chat_completion,
+            api::settings_api::ai_chat_completion_stream,
             api::settings_api::ai_get_json,
             api::settings_api::ai_transcribe_audio,
             api::settings_api::ai_text_to_speech,

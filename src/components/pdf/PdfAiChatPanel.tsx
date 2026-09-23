@@ -1,0 +1,311 @@
+import { For, Show, createEffect, createSignal, on, type Component } from "solid-js";
+import { aiStore } from "../../stores/ai";
+import { chatWithPaper } from "../../services/pdf/paperAiService";
+import {
+    getPaperChatSession,
+    savePaperChatSession,
+    type PaperChatMessage,
+    type PaperReference,
+    type PdfParagraphRecord,
+} from "../../services/pdf/literatureRepository";
+import { PAPER_REFERENCE_MIME } from "./ParagraphCardLane";
+
+function messageId() {
+    return crypto.randomUUID();
+}
+
+export const PdfAiChatPanel: Component<{
+    relativePath: string;
+    title: string;
+    paragraphs: PdfParagraphRecord[];
+    queuedReference: PaperReference | null;
+    translationStatus: string;
+    translationProgress: number;
+    translationError: string | null;
+    onGenerateCards: () => Promise<void>;
+    onContextStateChange?: (enabled: boolean) => void;
+    onReferenceConsumed: () => void;
+    onClose: () => void;
+}> = (props) => {
+    let inputRef: HTMLTextAreaElement | undefined;
+    let messageListRef: HTMLDivElement | undefined;
+    const [messages, setMessages] = createSignal<PaperChatMessage[]>([]);
+    const [contextInjected, setContextInjected] = createSignal(false);
+    const [references, setReferences] = createSignal<PaperReference[]>([]);
+    const [input, setInput] = createSignal("");
+    const [loading, setLoading] = createSignal(false);
+    const [error, setError] = createSignal<string | null>(null);
+    const [dragging, setDragging] = createSignal(false);
+    const [sessionLoaded, setSessionLoaded] = createSignal(false);
+    const [enabling, setEnabling] = createSignal(false);
+
+    createEffect(on(() => props.relativePath, (relativePath) => {
+        setMessages([]);
+        setContextInjected(false);
+        setReferences([]);
+        setError(null);
+        setSessionLoaded(false);
+        void getPaperChatSession(relativePath)
+            .then((session) => {
+                setMessages(session.messages);
+                setContextInjected(session.contextInjected);
+                props.onContextStateChange?.(session.contextInjected);
+                setSessionLoaded(true);
+            })
+            .catch((reason) => {
+                setError(reason instanceof Error ? reason.message : String(reason));
+                setSessionLoaded(true);
+            });
+    }, { defer: false }));
+
+    createEffect(() => {
+        const reference = props.queuedReference;
+        if (!reference) return;
+        addReference(reference);
+        props.onReferenceConsumed();
+        inputRef?.focus();
+    });
+
+    createEffect(() => {
+        messages();
+        requestAnimationFrame(() => {
+            if (messageListRef) messageListRef.scrollTop = messageListRef.scrollHeight;
+        });
+    });
+
+    function addReference(reference: PaperReference) {
+        setReferences((current) => current.some((entry) =>
+            entry.paragraphId === reference.paragraphId && entry.text === reference.text,
+        ) ? current : [...current, reference]);
+    }
+
+    function handleDrop(event: DragEvent) {
+        event.preventDefault();
+        setDragging(false);
+        const encoded = event.dataTransfer?.getData(PAPER_REFERENCE_MIME);
+        if (encoded) {
+            try {
+                addReference(JSON.parse(encoded) as PaperReference);
+                inputRef?.focus();
+                return;
+            } catch {
+                // Fall through to plain text.
+            }
+        }
+        const text = event.dataTransfer?.getData("text/plain")?.trim();
+        if (text) addReference({ label: "拖拽的原文", text });
+    }
+
+    async function persist(next: PaperChatMessage[], injected: boolean) {
+        await savePaperChatSession(props.relativePath, next, injected);
+    }
+
+    async function send() {
+        const question = input().trim();
+        const attached = references();
+        if ((!question && !attached.length) || loading()) return;
+        if (!aiStore.isConfigured()) {
+            setError("请先在设置 → 模型接入中配置并测试 AI 模型。");
+            return;
+        }
+        if (!props.paragraphs.length) {
+            setError("论文文字尚未识别完成，暂时无法注入全文。");
+            return;
+        }
+        const userContent = question || "请分析我引用的内容。";
+        const userMessage: PaperChatMessage = {
+            id: messageId(),
+            role: "user",
+            content: userContent,
+            references: attached,
+            createdAt: new Date().toISOString(),
+        };
+        const history = messages();
+        const assistantMessage: PaperChatMessage = {
+            id: messageId(),
+            role: "assistant",
+            content: "",
+            references: [],
+            createdAt: new Date().toISOString(),
+        };
+        const withUser = [...history, userMessage];
+        setMessages([...withUser, assistantMessage]);
+        setInput("");
+        setReferences([]);
+        setLoading(true);
+        setError(null);
+        setContextInjected(true);
+        props.onContextStateChange?.(true);
+        try {
+            await persist(withUser, true);
+            const answer = await chatWithPaper(
+                props.title,
+                props.paragraphs,
+                history,
+                userContent,
+                attached,
+                (_chunk, fullMessage) => {
+                    setMessages((current) => current.map((message) =>
+                        message.id === assistantMessage.id
+                            ? { ...message, content: fullMessage }
+                            : message,
+                    ));
+                },
+            );
+            const completed = [...withUser, { ...assistantMessage, content: answer }];
+            setMessages(completed);
+            setContextInjected(true);
+            await persist(completed, true);
+        } catch (reason) {
+            setMessages(withUser);
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setLoading(false);
+        }
+    }
+
+    async function clearChat() {
+        setMessages([]);
+        setReferences([]);
+        setError(null);
+        await persist([], contextInjected()).catch((reason) => setError(String(reason)));
+    }
+
+    async function enablePaperAi() {
+        if (enabling()) return;
+        if (!aiStore.isConfigured()) {
+            setError("请先在设置 → 模型接入中配置并测试 AI 模型。");
+            return;
+        }
+        setEnabling(true);
+        setError(null);
+        try {
+            await persist(messages(), true);
+            setContextInjected(true);
+            props.onContextStateChange?.(true);
+        } catch (reason) {
+            setError(reason instanceof Error ? reason.message : String(reason));
+        } finally {
+            setEnabling(false);
+        }
+    }
+
+    return (
+        <aside
+            class="mz-pdf-ai-chat"
+            classList={{ "is-dragging": dragging() }}
+            onDragOver={(event) => {
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+                setDragging(true);
+            }}
+            onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false);
+            }}
+            onDrop={handleDrop}
+        >
+            <header class="mz-pdf-ai-chat-header">
+                <div>
+                    <strong>论文 AI</strong>
+                    <small>{aiStore.currentModelLabel() || "未配置模型"}</small>
+                </div>
+                <button title="清空对话" onClick={() => void clearChat()}>清空</button>
+                <button title="关闭" onClick={props.onClose}>×</button>
+            </header>
+            <Show when={sessionLoaded()} fallback={
+                <div class="mz-pdf-ai-consent"><p>正在加载论文 AI 会话…</p></div>
+            }>
+            <Show when={contextInjected()} fallback={
+                <div class="mz-pdf-ai-consent">
+                    <div class="mz-pdf-ai-consent-icon">AI</div>
+                    <strong>是否启用「{aiStore.currentModelLabel() || "未配置模型"}」？</strong>
+                    <p>启用后会像 Vibero 一样，在首次提问时把已识别的论文全文加入当前会话，后续对话沿用会话历史。</p>
+                    <p class="mz-pdf-ai-consent-note">启用本身不会调用模型，也不会生成总结卡片；发送问题时论文正文会发送给当前配置的模型服务商。</p>
+                    <div>
+                        <button onClick={props.onClose}>暂不启用</button>
+                        <button disabled={enabling()} onClick={() => void enablePaperAi()}>{enabling() ? "正在启用…" : "启用"}</button>
+                    </div>
+                    <Show when={error()}><div class="mz-pdf-ai-error">{error()}</div></Show>
+                </div>
+            }>
+            <div class="mz-pdf-ai-background-status">
+                <span>{messages().length ? "论文全文会话已启用" : "首次提问时注入全文"}</span>
+                <Show when={props.translationStatus === "running"} fallback={
+                    <button
+                        classList={{ "is-error": props.translationStatus === "failed" }}
+                        title={props.translationError ?? "明确启动后才会生成逐段翻译、摘要和证据标签"}
+                        onClick={() => void props.onGenerateCards()}
+                    >
+                        {props.translationStatus === "completed"
+                            ? "重新生成总结卡片"
+                            : props.translationStatus === "failed"
+                                ? "重试总结卡片"
+                                : "生成总结卡片"}
+                    </button>
+                }>
+                    <span>总结卡片 {Math.round(props.translationProgress * 100)}%</span>
+                </Show>
+            </div>
+            <div ref={messageListRef} class="mz-pdf-ai-messages">
+                <Show when={messages().length} fallback={
+                    <div class="mz-pdf-ai-empty">
+                        <strong>基于论文全文提问</strong>
+                        <p>首次发送时会注入已识别的全文，共 {props.paragraphs.length} 个段落。</p>
+                        <p>可以把段落卡片、要点标签或选中的原文拖到这里。</p>
+                    </div>
+                }>
+                    <For each={messages()}>
+                        {(message) => (
+                            <article class={`mz-pdf-ai-message is-${message.role}`}>
+                                <div class="mz-pdf-ai-message-role">{message.role === "user" ? "你" : "AI"}</div>
+                                <div class="mz-pdf-ai-message-content">{message.content || (loading() && message.role === "assistant" ? "正在思考…" : "")}</div>
+                                <For each={message.references}>
+                                    {(reference) => (
+                                        <blockquote title={reference.text}>{reference.label}</blockquote>
+                                    )}
+                                </For>
+                            </article>
+                        )}
+                    </For>
+                </Show>
+            </div>
+            <Show when={error()}>
+                <div class="mz-pdf-ai-error">{error()}</div>
+            </Show>
+            <div class="mz-pdf-ai-composer">
+                <Show when={references().length}>
+                    <div class="mz-pdf-ai-references">
+                        <For each={references()}>
+                            {(reference, index) => (
+                                <button title={reference.text} onClick={() => setReferences((items) => items.filter((_, itemIndex) => itemIndex !== index()))}>
+                                    @{reference.label} ×
+                                </button>
+                            )}
+                        </For>
+                    </div>
+                </Show>
+                <textarea
+                    ref={inputRef}
+                    value={input()}
+                    placeholder="询问这篇论文…"
+                    onInput={(event) => setInput(event.currentTarget.value)}
+                    onKeyDown={(event) => {
+                        if (event.key === "Enter" && !event.shiftKey) {
+                            event.preventDefault();
+                            void send();
+                        }
+                    }}
+                />
+                <div class="mz-pdf-ai-composer-footer">
+                    <span>{contextInjected() ? "全文上下文已启用；回答将流式显示" : "首次对话将注入全文"}</span>
+                    <button disabled={loading()} onClick={() => void send()}>发送</button>
+                </div>
+            </div>
+            <Show when={dragging()}>
+                <div class="mz-pdf-ai-drop-mask">松开以引用到对话</div>
+            </Show>
+            </Show>
+            </Show>
+        </aside>
+    );
+};

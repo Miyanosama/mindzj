@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tauri::{LogicalPosition, LogicalSize, Manager, State};
+use std::time::Duration;
+use tauri::{ipc::Channel, LogicalPosition, LogicalSize, Manager, State};
 
 const MIN_RESTORED_WINDOW_WIDTH: u32 = 320;
 const MIN_RESTORED_WINDOW_HEIGHT: u32 = 240;
@@ -52,6 +53,94 @@ fn parse_ai_provider_type(provider: &str) -> Option<AiProviderType> {
 
 fn ai_keyring_account(provider: &str) -> String {
     format!("provider:{}", provider.trim())
+}
+
+fn keyring_error(action: &str, error: KeyringError) -> CommandError {
+    CommandError {
+        code: "AI_KEYRING_ERROR".into(),
+        message: format!(
+            "Failed to {action} API key in the operating-system credential store: {error}"
+        ),
+    }
+}
+
+fn read_keyring_secret(provider: &str) -> Result<Option<String>, CommandError> {
+    let entry = Entry::new(AI_KEYRING_SERVICE, &ai_keyring_account(provider))
+        .map_err(|error| keyring_error("open", error))?;
+    match entry.get_password() {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(value.trim().to_string())),
+        Ok(_) | Err(KeyringError::NoEntry) => Ok(None),
+        Err(error) => Err(keyring_error("read", error)),
+    }
+}
+
+fn write_keyring_secret(provider: &str, value: Option<&str>) -> Result<(), CommandError> {
+    let entry = Entry::new(AI_KEYRING_SERVICE, &ai_keyring_account(provider))
+        .map_err(|error| keyring_error("open", error))?;
+    match value.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(value) => {
+            entry
+                .set_password(value)
+                .map_err(|error| keyring_error("save", error))?;
+            let stored = entry
+                .get_password()
+                .map_err(|error| keyring_error("verify", error))?;
+            if stored != value {
+                return Err(CommandError {
+                    code: "AI_KEYRING_ERROR".into(),
+                    message: "The operating-system credential store did not preserve the API key."
+                        .into(),
+                });
+            }
+            Ok(())
+        }
+        None => match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => Ok(()),
+            Err(error) => Err(keyring_error("delete", error)),
+        },
+    }
+}
+
+fn provider_type_name(provider_type: &AiProviderType) -> &'static str {
+    match provider_type {
+        AiProviderType::Ollama => "Ollama",
+        AiProviderType::LMStudio => "LMStudio",
+        AiProviderType::ApiKeyLLM => "ApiKeyLLM",
+        AiProviderType::Claude => "Claude",
+        AiProviderType::OpenAI => "OpenAI",
+        AiProviderType::Grok => "Grok",
+        AiProviderType::Gemini => "Gemini",
+        AiProviderType::DeepSeek => "DeepSeek",
+        AiProviderType::Custom => "Custom",
+    }
+}
+
+fn migrate_legacy_config_key(
+    config: &mut crate::kernel::types::AiProviderConfig,
+) -> Result<bool, CommandError> {
+    let provider = config
+        .id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| provider_type_name(&config.provider_type));
+    let legacy_secret = config
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(secret) = legacy_secret {
+        write_keyring_secret(provider, Some(&secret))?;
+        config.api_key = None;
+        config.has_api_key = true;
+        return Ok(true);
+    }
+
+    config.api_key = None;
+    let has_api_key = read_keyring_secret(provider)?.is_some();
+    let changed = config.has_api_key != has_api_key;
+    config.has_api_key = has_api_key;
+    Ok(changed)
 }
 
 fn provider_matches_config(
@@ -109,6 +198,57 @@ pub struct AiTextToSpeechRequest {
 pub struct AiTextToSpeechResult {
     path: String,
     file_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiChatCompletionStreamRequest {
+    url: String,
+    headers: Option<HashMap<String, String>>,
+    body: Value,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AiStreamEvent {
+    data: String,
+    done: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderConnectionTestRequest {
+    provider: String,
+    provider_type: AiProviderType,
+    endpoint: Option<String>,
+    model: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiProviderConnectionTestResult {
+    model: String,
+    content: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelDiscoveryRequest {
+    endpoint: String,
+    api_key: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiDiscoveredModel {
+    id: String,
+    display_name: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelDiscoveryResult {
+    models: Vec<AiDiscoveredModel>,
 }
 
 fn validate_ai_url(url: &str) -> Result<(), CommandError> {
@@ -259,11 +399,39 @@ pub async fn get_settings(
     window: tauri::WebviewWindow,
 ) -> Result<AppSettings, CommandError> {
     let ctx = state.get_vault_context(window.label())?;
-    let s = ctx.settings.read().map_err(|_| CommandError {
-        code: "LOCK_ERROR".into(),
-        message: "Failed to acquire settings lock".into(),
-    })?;
-    Ok(s.clone())
+    let (settings, migrated) = {
+        let mut settings = ctx.settings.write().map_err(|_| CommandError {
+            code: "LOCK_ERROR".into(),
+            message: "Failed to acquire settings lock".into(),
+        })?;
+        let mut migrated = false;
+        if let Some(config) = settings.ai_provider.as_mut() {
+            migrated |= migrate_legacy_config_key(config)?;
+        }
+        for config in &mut settings.ai_custom_providers {
+            migrated |= migrate_legacy_config_key(config)?;
+        }
+        (settings.clone(), migrated)
+    };
+    if migrated {
+        ctx.save_settings().map_err(CommandError::from)?;
+    }
+    Ok(settings)
+}
+
+fn ai_models_url(endpoint: &str) -> String {
+    let mut base = endpoint.trim().trim_end_matches('/').to_string();
+    for suffix in ["/chat/completions", "/responses", "/messages"] {
+        if base.to_ascii_lowercase().ends_with(suffix) {
+            base.truncate(base.len() - suffix.len());
+            break;
+        }
+    }
+    if base.to_ascii_lowercase().ends_with("/models") {
+        base
+    } else {
+        format!("{base}/models")
+    }
 }
 
 /// Update application settings (full replace + persist).
@@ -271,9 +439,15 @@ pub async fn get_settings(
 pub async fn update_settings(
     state: State<'_, AppState>,
     window: tauri::WebviewWindow,
-    settings: AppSettings,
+    mut settings: AppSettings,
 ) -> Result<(), CommandError> {
     let ctx = state.get_vault_context(window.label())?;
+    if let Some(config) = settings.ai_provider.as_mut() {
+        config.api_key = None;
+    }
+    for config in &mut settings.ai_custom_providers {
+        config.api_key = None;
+    }
     {
         let mut s = ctx.settings.write().map_err(|_| CommandError {
             code: "LOCK_ERROR".into(),
@@ -292,20 +466,43 @@ pub async fn get_ai_api_key(
     provider: String,
 ) -> Result<Option<String>, CommandError> {
     let ctx = state.get_vault_context(window.label())?;
-    {
+    if let Some(secret) = read_keyring_secret(&provider)? {
+        let changed = {
+            let mut settings = ctx.settings.write().map_err(|_| CommandError {
+                code: "LOCK_ERROR".into(),
+                message: "Failed to acquire settings lock".into(),
+            })?;
+            let mut changed = false;
+            if let Some(config) = settings.ai_provider.as_mut() {
+                if provider_matches_config(&provider, config.id.as_deref(), &config.provider_type) {
+                    changed |= config.api_key.take().is_some() || !config.has_api_key;
+                    config.has_api_key = true;
+                }
+            }
+            for config in &mut settings.ai_custom_providers {
+                if provider_matches_config(&provider, config.id.as_deref(), &config.provider_type) {
+                    changed |= config.api_key.take().is_some() || !config.has_api_key;
+                    config.has_api_key = true;
+                }
+            }
+            changed
+        };
+        if changed {
+            ctx.save_settings().map_err(CommandError::from)?;
+        }
+        return Ok(Some(secret));
+    }
+
+    let legacy_key = {
         let settings = ctx.settings.read().map_err(|_| CommandError {
             code: "LOCK_ERROR".into(),
             message: "Failed to acquire settings lock".into(),
         })?;
-        let key = settings
+        settings
             .ai_provider
             .as_ref()
             .filter(|config| {
-                provider_matches_config(
-                    &provider,
-                    config.id.as_deref(),
-                    &config.provider_type,
-                )
+                provider_matches_config(&provider, config.id.as_deref(), &config.provider_type)
             })
             .and_then(|config| config.api_key.clone())
             .or_else(|| {
@@ -321,20 +518,10 @@ pub async fn get_ai_api_key(
                     })
                     .and_then(|config| config.api_key.clone())
             })
-            .filter(|value| !value.trim().is_empty());
-        if key.is_some() {
-            return Ok(key);
-        }
-    }
-
-    let legacy_entry = Entry::new(AI_KEYRING_SERVICE, &ai_keyring_account(&provider)).ok();
-    let legacy_key = legacy_entry
-        .as_ref()
-        .and_then(|entry| match entry.get_password() {
-            Ok(value) if !value.trim().is_empty() => Some(value.trim().to_string()),
-            Ok(_) | Err(KeyringError::NoEntry) | Err(_) => None,
-        });
+            .filter(|value| !value.trim().is_empty())
+    };
     if let Some(key) = legacy_key {
+        write_keyring_secret(&provider, Some(&key))?;
         {
             let mut settings = ctx.settings.write().map_err(|_| CommandError {
                 code: "LOCK_ERROR".into(),
@@ -342,22 +529,19 @@ pub async fn get_ai_api_key(
             })?;
             if let Some(config) = settings.ai_provider.as_mut() {
                 if provider_matches_config(&provider, config.id.as_deref(), &config.provider_type) {
-                    config.api_key = Some(key.clone());
+                    config.api_key = None;
                     config.has_api_key = true;
                 }
             }
             for config in settings.ai_custom_providers.iter_mut() {
                 if provider_matches_config(&provider, config.id.as_deref(), &config.provider_type) {
-                    config.api_key = Some(key.clone());
+                    config.api_key = None;
                     config.has_api_key = true;
                 }
             }
         }
         ctx.save_settings().map_err(CommandError::from)?;
-        if let Some(entry) = legacy_entry {
-            let _ = entry.delete_credential();
-        }
-        return Ok(Some(key));
+        return Ok(Some(key.trim().to_string()));
     }
 
     Ok(None)
@@ -370,11 +554,9 @@ pub async fn set_ai_api_key(
     provider: String,
     api_key: Option<String>,
 ) -> Result<(), CommandError> {
-    let value = api_key
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let value = api_key.unwrap_or_default().trim().to_string();
     let stored = if value.is_empty() { None } else { Some(value) };
+    write_keyring_secret(&provider, stored.as_deref())?;
     let has_api_key = stored.is_some();
     let ctx = state.get_vault_context(window.label())?;
     {
@@ -384,19 +566,234 @@ pub async fn set_ai_api_key(
         })?;
         if let Some(config) = settings.ai_provider.as_mut() {
             if provider_matches_config(&provider, config.id.as_deref(), &config.provider_type) {
-                config.api_key = stored.clone();
+                config.api_key = None;
                 config.has_api_key = has_api_key;
             }
         }
         for config in settings.ai_custom_providers.iter_mut() {
             if provider_matches_config(&provider, config.id.as_deref(), &config.provider_type) {
-                config.api_key = stored.clone();
+                config.api_key = None;
                 config.has_api_key = has_api_key;
             }
         }
     }
     ctx.save_settings().map_err(CommandError::from)?;
     Ok(())
+}
+
+#[tauri::command]
+pub async fn discover_ai_provider_models(
+    request: AiModelDiscoveryRequest,
+) -> Result<AiModelDiscoveryResult, CommandError> {
+    let endpoint = request.endpoint.trim();
+    validate_ai_url(endpoint)?;
+    let api_key = request.api_key.trim();
+    if api_key.is_empty() {
+        return Err(CommandError {
+            code: "AI_API_KEY_REQUIRED".into(),
+            message: "API key is required to retrieve models.".into(),
+        });
+    }
+
+    let anthropic = endpoint.to_ascii_lowercase().contains("api.anthropic.com");
+    let mut url = ai_models_url(endpoint);
+    if anthropic && !url.contains('?') {
+        url.push_str("?limit=1000");
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| CommandError {
+            code: "AI_PROVIDER_ERROR".into(),
+            message: error.to_string(),
+        })?;
+    let mut builder = client.get(url);
+    if anthropic {
+        builder = builder
+            .header("x-api-key", api_key)
+            .header("anthropic-version", "2023-06-01");
+    } else {
+        builder = builder.bearer_auth(api_key);
+    }
+    let response = builder.send().await.map_err(|error| CommandError {
+        code: "AI_PROVIDER_ERROR".into(),
+        message: error.to_string(),
+    })?;
+    let status = response.status();
+    let text = response.text().await.map_err(|error| CommandError {
+        code: "AI_PROVIDER_ERROR".into(),
+        message: error.to_string(),
+    })?;
+    if !status.is_success() {
+        return Err(ai_provider_status_error(status, text));
+    }
+    let body: Value = serde_json::from_str(&text).map_err(|error| CommandError {
+        code: "AI_PROVIDER_ERROR".into(),
+        message: format!("Invalid provider response: {error}"),
+    })?;
+    let data = body
+        .get("data")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CommandError {
+            code: "AI_PROVIDER_ERROR".into(),
+            message: "The provider response did not contain a model list.".into(),
+        })?;
+    let mut models: Vec<AiDiscoveredModel> = data
+        .iter()
+        .filter_map(|item| {
+            let id = item.get("id")?.as_str()?.trim();
+            if id.is_empty() {
+                return None;
+            }
+            let display_name = item
+                .get("display_name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(id);
+            Some(AiDiscoveredModel {
+                id: id.to_string(),
+                display_name: display_name.to_string(),
+            })
+        })
+        .collect();
+    models.sort_by(|left, right| {
+        left.display_name
+            .to_ascii_lowercase()
+            .cmp(&right.display_name.to_ascii_lowercase())
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    models.dedup_by(|left, right| left.id == right.id);
+    if models.is_empty() {
+        return Err(CommandError {
+            code: "AI_PROVIDER_ERROR".into(),
+            message: "The provider returned an empty model list.".into(),
+        });
+    }
+
+    Ok(AiModelDiscoveryResult { models })
+}
+
+#[tauri::command]
+pub async fn test_ai_provider_connection(
+    request: AiProviderConnectionTestRequest,
+) -> Result<AiProviderConnectionTestResult, CommandError> {
+    let endpoint = request.endpoint.as_deref().unwrap_or_default().trim();
+    validate_ai_url(endpoint)?;
+    let model = request.model.trim();
+    if model.is_empty() {
+        return Err(CommandError {
+            code: "INVALID_AI_MODEL".into(),
+            message: "AI model is empty.".into(),
+        });
+    }
+    let api_key = read_keyring_secret(&request.provider)?.ok_or_else(|| CommandError {
+        code: "AI_API_KEY_REQUIRED".into(),
+        message: "API key is required for this provider.".into(),
+    })?;
+    let base = endpoint.trim_end_matches('/');
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| CommandError {
+            code: "AI_PROVIDER_ERROR".into(),
+            message: error.to_string(),
+        })?;
+
+    let is_anthropic = matches!(request.provider_type, AiProviderType::Claude)
+        || base.to_ascii_lowercase().contains("api.anthropic.com");
+    let supported = matches!(
+        request.provider_type,
+        AiProviderType::Claude
+            | AiProviderType::OpenAI
+            | AiProviderType::DeepSeek
+            | AiProviderType::ApiKeyLLM
+            | AiProviderType::Custom
+    );
+    if !supported {
+        return Err(CommandError {
+            code: "UNSUPPORTED_AI_PROVIDER".into(),
+            message: "Secure connection testing currently supports OpenAI, DeepSeek, Anthropic, and compatible custom providers.".into(),
+        });
+    }
+
+    let (response, anthropic) = if is_anthropic {
+        let url = if base.ends_with("/messages") {
+            base.to_string()
+        } else {
+            format!("{base}/messages")
+        };
+        let response = client
+            .post(url)
+            .header("x-api-key", &api_key)
+            .header("anthropic-version", "2023-06-01")
+            .json(&serde_json::json!({
+                "model": model,
+                "max_tokens": 8,
+                "messages": [{ "role": "user", "content": "Reply with OK." }]
+            }))
+            .send()
+            .await
+            .map_err(|error| CommandError {
+                code: "AI_PROVIDER_ERROR".into(),
+                message: error.to_string(),
+            })?;
+        (response, true)
+    } else {
+        let url = if base.ends_with("/chat/completions") {
+            base.to_string()
+        } else {
+            format!("{base}/chat/completions")
+        };
+        let response = client
+            .post(url)
+            .bearer_auth(&api_key)
+            .json(&serde_json::json!({
+                "model": model,
+                "max_tokens": 8,
+                "messages": [{ "role": "user", "content": "Reply with OK." }]
+            }))
+            .send()
+            .await
+            .map_err(|error| CommandError {
+                code: "AI_PROVIDER_ERROR".into(),
+                message: error.to_string(),
+            })?;
+        (response, false)
+    };
+
+    let status = response.status();
+    let text = response.text().await.map_err(|error| CommandError {
+        code: "AI_PROVIDER_ERROR".into(),
+        message: error.to_string(),
+    })?;
+    if !status.is_success() {
+        return Err(ai_provider_status_error(status, text));
+    }
+    let body: Value = serde_json::from_str(&text).map_err(|error| CommandError {
+        code: "AI_PROVIDER_ERROR".into(),
+        message: format!("Invalid provider response: {error}"),
+    })?;
+    let content = if anthropic {
+        body.get("content")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find_map(|item| item.get("text").and_then(Value::as_str))
+            })
+    } else {
+        body.pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+    }
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string);
+
+    Ok(AiProviderConnectionTestResult {
+        model: model.to_string(),
+        content,
+    })
 }
 
 #[tauri::command]
@@ -441,6 +838,89 @@ pub async fn ai_chat_completion(request: AiChatCompletionRequest) -> Result<Valu
         code: "AI_PROVIDER_ERROR".into(),
         message: format!("Invalid AI response JSON: {}", e),
     })
+}
+
+/// Stream an OpenAI/Anthropic/Gemini-compatible SSE response through a Tauri
+/// Channel. The frontend receives provider-native `data:` payloads and can
+/// normalize deltas without buffering the whole paper response.
+#[tauri::command]
+pub async fn ai_chat_completion_stream(
+    request: AiChatCompletionStreamRequest,
+    on_event: Channel<AiStreamEvent>,
+) -> Result<(), CommandError> {
+    let url = request.url.trim();
+    validate_ai_url(url)?;
+    let headers = build_ai_headers(request.headers, true)?;
+    let response = reqwest::Client::new()
+        .post(url)
+        .headers(headers)
+        .json(&request.body)
+        .send()
+        .await
+        .map_err(|e| CommandError {
+            code: "AI_PROVIDER_ERROR".into(),
+            message: e.to_string(),
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let text = response.text().await.unwrap_or_default();
+        return Err(ai_provider_status_error(status, text));
+    }
+
+    let mut stream = response.bytes_stream();
+    let mut buffer = String::new();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(|e| CommandError {
+            code: "AI_PROVIDER_ERROR".into(),
+            message: e.to_string(),
+        })?;
+        buffer.push_str(&String::from_utf8_lossy(&bytes));
+        while let Some(index) = buffer.find('\n') {
+            let line = buffer[..index].trim_end_matches('\r').to_string();
+            buffer.drain(..=index);
+            let trimmed = line.trim();
+            if let Some(data) = trimmed.strip_prefix("data:") {
+                let data = data.trim().to_string();
+                if !data.is_empty() {
+                    on_event
+                        .send(AiStreamEvent {
+                            data: data.clone(),
+                            done: data == "[DONE]",
+                        })
+                        .map_err(|e| CommandError {
+                            code: "AI_STREAM_ERROR".into(),
+                            message: e.to_string(),
+                        })?;
+                }
+            }
+        }
+    }
+    let trailing = buffer.trim();
+    if let Some(data) = trailing.strip_prefix("data:") {
+        let data = data.trim().to_string();
+        if !data.is_empty() {
+            on_event
+                .send(AiStreamEvent {
+                    data: data.clone(),
+                    done: data == "[DONE]",
+                })
+                .map_err(|e| CommandError {
+                    code: "AI_STREAM_ERROR".into(),
+                    message: e.to_string(),
+                })?;
+        }
+    }
+    on_event
+        .send(AiStreamEvent {
+            data: String::new(),
+            done: true,
+        })
+        .map_err(|e| CommandError {
+            code: "AI_STREAM_ERROR".into(),
+            message: e.to_string(),
+        })?;
+    Ok(())
 }
 
 #[tauri::command]

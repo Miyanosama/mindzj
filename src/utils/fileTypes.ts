@@ -23,6 +23,8 @@ export type FileHandler =
     | "image"
     /** Open in an in-app document placeholder tab. */
     | "preview"
+    /** Open in the built-in PDF reading workspace. */
+    | "pdf"
     /** Delegate to the OS default application (Word, Excel, etc.). */
     | "external"
     /** Unknown extension — fall back to the editor (maybe it's text). */
@@ -119,6 +121,8 @@ const PREVIEW_EXTS = new Set([
     "docx",
 ]);
 
+const PDF_EXTS = new Set(["pdf"]);
+
 /**
  * Files we hand off to the OS default app. These either can't render
  * in a WebView2 view at all (Office, PDF, archives) or would render
@@ -140,8 +144,6 @@ const EXTERNAL_EXTS = new Set([
     "pages",
     "numbers",
     "key",
-    // PDFs
-    "pdf",
     // Audio / video
     "mp3",
     "m4a",
@@ -196,6 +198,7 @@ export function getFileHandler(
     if (ext && hasPluginView(ext)) return "plugin";
     if (IMAGE_EXTS.has(ext)) return "image";
     if (TEXT_EXTS.has(ext)) return "editor";
+    if (PDF_EXTS.has(ext)) return "pdf";
     if (PREVIEW_EXTS.has(ext)) return "preview";
     if (EXTERNAL_EXTS.has(ext)) return "external";
     // Unknown extension: try the editor. Worst case the user sees
@@ -226,4 +229,12 @@ export function isExternalExtension(ext: string): boolean {
 
 export function isPreviewExtension(ext: string): boolean {
     return PREVIEW_EXTS.has(ext.toLowerCase());
+}
+
+export function isPdfExtension(ext: string): boolean {
+    return PDF_EXTS.has(ext.toLowerCase());
+}
+
+export function isPdfPath(path: string): boolean {
+    return isPdfExtension(getFileExtension(path));
 }

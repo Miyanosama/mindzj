@@ -13,7 +13,7 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { vaultStore, type FileContent } from "./stores/vault";
 import { editorStore, type ViewMode } from "./stores/editor";
 import { settingsStore, type AiProviderConfig } from "./stores/settings";
@@ -70,6 +70,7 @@ import { SettingsModal } from "./components/settings/SettingsModal";
 import { WindowControls } from "./components/common/TitleBar";
 import { ImageViewer } from "./components/common/ImageViewer";
 import { FilePreview } from "./components/common/FilePreview";
+import { PdfWorkspace } from "./workspaces/PdfWorkspace";
 import { createPersistableWindowState } from "./utils/windowState";
 import {
     register,
@@ -93,6 +94,7 @@ import { EditorView } from "@codemirror/view";
 import { t } from "./i18n";
 import { setFindQuery } from "./stores/findState";
 import { getClientPlatform } from "./utils/platform";
+import { isMarkdownPath, isPdfPath } from "./utils/fileTypes";
 
 type SidebarTab = "files" | "outline" | "search" | "calendar";
 type SplitDirection = "left" | "right" | "up" | "down";
@@ -3606,6 +3608,39 @@ const App: Component = () => {
         await vaultStore.openFile(fileName);
     }
 
+    async function handleImportPdf() {
+        const selected = await openDialog({
+            title: t("pdf.importTitle"),
+            multiple: true,
+            directory: false,
+            filters: [{ name: "PDF", extensions: ["pdf"] }],
+        });
+        if (!selected) return;
+
+        const sourcePaths = Array.isArray(selected) ? selected : [selected];
+        let lastImportedPath: string | null = null;
+        let importedCount = 0;
+        for (const sourceAbsolutePath of sourcePaths) {
+            try {
+                lastImportedPath = await invoke<string>("import_pdf", {
+                    sourceAbsolutePath,
+                    relativeDir: "",
+                });
+                importedCount += 1;
+            } catch (error) {
+                console.error("[PDF] import failed:", error);
+                showShortcutToast(t("pdf.importFailed"));
+            }
+        }
+        await vaultStore.refreshFileTree();
+        if (lastImportedPath) {
+            await openFileRouted(lastImportedPath);
+            showShortcutToast(
+                t("pdf.imported", { count: importedCount }),
+            );
+        }
+    }
+
     function toggleAllFolders() {
         setAllFoldersVisibility(allFoldersCollapsed() ? "expand" : "collapse");
     }
@@ -3878,6 +3913,12 @@ const App: Component = () => {
                                                             name,
                                                         );
                                                 },
+                                            },
+                                            {
+                                                title: t("pdf.import"),
+                                                icon: "M6 2h8l4 4v16H6zM14 2v5h5M12 11v7M9 14l3-3 3 3",
+                                                action: () =>
+                                                    void handleImportPdf(),
                                             },
                                             {
                                                 title: allFoldersCollapsed()
@@ -4372,14 +4413,8 @@ const App: Component = () => {
                                     when={
                                         settingsStore.settings()
                                             .show_markdown_toolbar &&
-                                        !hasPluginViewForExtension(
-                                            (
-                                                vaultStore.activeFile()?.path ??
-                                                ""
-                                            )
-                                                .split(".")
-                                                .pop()
-                                                ?.toLowerCase() ?? "",
+                                        isMarkdownPath(
+                                            vaultStore.activeFile()?.path ?? "",
                                         )
                                     }>
                                     <Toolbar />
@@ -5877,6 +5912,9 @@ const PaneFileView: Component<{
         () => props.filePath.split(".").pop()?.toLowerCase() ?? "",
     );
     const isPluginView = createMemo(() => hasPluginViewForExtension(fileExt()));
+    const isPdfWorkspace = createMemo(
+        () => file()?.kind === "pdf" || isPdfPath(props.filePath),
+    );
     const viewMode = createMemo(() =>
         editorStore.getViewModeForFile(props.filePath),
     );
@@ -5986,39 +6024,48 @@ const PaneFileView: Component<{
                     </div>
                 }>
                 <Show
-                    when={previewKind()}
+                    when={isPdfWorkspace()}
                     fallback={
                         <Show
-                            when={isPluginView()}
+                            when={previewKind()}
                             fallback={
                                 <Show
-                                    when={viewMode() === "reading"}
+                                    when={isPluginView()}
                                     fallback={
-                                        <Editor
-                                            file={file()}
-                                            viewMode={viewMode()}
-                                            isActive={props.active}
-                                            onActivate={props.onActivate}
-                                        />
+                                        <Show
+                                            when={viewMode() === "reading"}
+                                            fallback={
+                                                <Editor
+                                                    file={file()}
+                                                    viewMode={viewMode()}
+                                                    isActive={props.active}
+                                                    onActivate={props.onActivate}
+                                                />
+                                            }>
+                                            <ReadingView
+                                                file={file()}
+                                                isActive={props.active}
+                                                onActivate={props.onActivate}
+                                            />
+                                        </Show>
                                     }>
-                                    <ReadingView
-                                        file={file()}
-                                        isActive={props.active}
-                                        onActivate={props.onActivate}
+                                    <PluginViewHost
+                                        filePath={props.filePath}
+                                        content={file()!.content}
+                                        extension={fileExt()}
+                                        active={props.active}
                                     />
                                 </Show>
                             }>
-                            <PluginViewHost
+                            <FilePreview
                                 filePath={props.filePath}
-                                content={file()!.content}
-                                extension={fileExt()}
+                                kind={previewKind()!}
                                 active={props.active}
                             />
                         </Show>
                     }>
-                    <FilePreview
+                    <PdfWorkspace
                         filePath={props.filePath}
-                        kind={previewKind()!}
                         active={props.active}
                     />
                 </Show>

@@ -2,6 +2,7 @@ use crate::kernel::error::CommandError;
 use crate::kernel::types::{FileContent, FileMetadata, VaultEntry, VaultInfo};
 use crate::kernel::watcher::VaultWatcher;
 use crate::kernel::AppState;
+use crate::literature::LiteratureRepository;
 use base64::Engine;
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -72,7 +73,11 @@ fn read_plugin_manifest_info(plugin_dir: &Path) -> Option<(String, String)> {
     read_plugin_manifest_info_from_bytes(&content)
 }
 
-fn sync_plugin_dir_recursive(src: &Path, dst: &Path, preserve_data_json: bool) -> Result<(), CommandError> {
+fn sync_plugin_dir_recursive(
+    src: &Path,
+    dst: &Path,
+    preserve_data_json: bool,
+) -> Result<(), CommandError> {
     create_dir_if_needed(dst)?;
 
     for entry in std::fs::read_dir(src).map_err(|e| CommandError {
@@ -81,7 +86,11 @@ fn sync_plugin_dir_recursive(src: &Path, dst: &Path, preserve_data_json: bool) -
     })? {
         let entry = entry.map_err(|e| CommandError {
             code: "IO_ERROR".into(),
-            message: format!("Failed to read directory entry in '{}': {}", src.display(), e),
+            message: format!(
+                "Failed to read directory entry in '{}': {}",
+                src.display(),
+                e
+            ),
         })?;
         let source_path = entry.path();
         let target_path = dst.join(entry.file_name());
@@ -127,7 +136,11 @@ fn plugin_code_files_match(src: &Path, dst: &Path) -> Result<bool, CommandError>
     })? {
         let entry = entry.map_err(|e| CommandError {
             code: "IO_ERROR".into(),
-            message: format!("Failed to read directory entry in '{}': {}", src.display(), e),
+            message: format!(
+                "Failed to read directory entry in '{}': {}",
+                src.display(),
+                e
+            ),
         })?;
         let source_path = entry.path();
         let target_path = dst.join(entry.file_name());
@@ -202,11 +215,18 @@ fn write_enabled_plugins(path: &Path, plugin_ids: &[String]) -> Result<(), Comma
     })?;
     std::fs::write(path, json).map_err(|e| CommandError {
         code: "IO_ERROR".into(),
-        message: format!("Failed to write default plugin config '{}': {}", path.display(), e),
+        message: format!(
+            "Failed to write default plugin config '{}': {}",
+            path.display(),
+            e
+        ),
     })
 }
 
-fn sync_default_plugins_from_dir(source_root: &Path, plugins_dir: &Path) -> Result<Vec<String>, CommandError> {
+fn sync_default_plugins_from_dir(
+    source_root: &Path,
+    plugins_dir: &Path,
+) -> Result<Vec<String>, CommandError> {
     let mut plugin_ids = BTreeSet::new();
 
     for entry in std::fs::read_dir(source_root).map_err(|e| CommandError {
@@ -235,9 +255,7 @@ fn sync_default_plugins_from_dir(source_root: &Path, plugins_dir: &Path) -> Resu
         let code_files_match = plugin_code_files_match(&source_path, &target_path)?;
         let should_sync = !target_path.exists()
             || installed_info.is_none()
-            || installed_info
-                .as_ref()
-                .map(|(_, version)| version.as_str())
+            || installed_info.as_ref().map(|(_, version)| version.as_str())
                 != Some(bundled_info.1.as_str())
             || !code_files_match
             || !target_path.join("main.js").exists()
@@ -283,7 +301,10 @@ fn sync_default_plugins_from_embedded(plugins_dir: &Path) -> Result<Vec<String>,
     Ok(plugin_ids.into_iter().collect())
 }
 
-fn install_default_plugins_if_needed(app: &tauri::AppHandle, vault_root: &Path) -> Result<(), CommandError> {
+fn install_default_plugins_if_needed(
+    app: &tauri::AppHandle,
+    vault_root: &Path,
+) -> Result<(), CommandError> {
     let mindzj_dir = vault_root.join(".mindzj");
     let plugins_dir = mindzj_dir.join("plugins");
     let enabled_plugins_path = mindzj_dir.join("plugins.json");
@@ -322,7 +343,21 @@ pub async fn open_vault(
         .map_err(CommandError::from)?;
 
     if let Err(error) = install_default_plugins_if_needed(&app, &info.path) {
-        tracing::warn!("Failed to install default plugins for '{}': {}", info.path.display(), error.message);
+        tracing::warn!(
+            "Failed to install default plugins for '{}': {}",
+            info.path.display(),
+            error.message
+        );
+    }
+
+    if let Err(error) = LiteratureRepository::initialize(&info.path) {
+        // The literature database is additive. A migration failure must not
+        // prevent existing Markdown vaults from opening.
+        tracing::warn!(
+            "Failed to initialize literature database for '{}': {}",
+            info.path.display(),
+            error
+        );
     }
 
     // Allow the asset protocol to serve files from this vault directory.
@@ -471,6 +506,27 @@ pub async fn rename_file(
         .rename_file(&from, &to)
         .map_err(CommandError::from)?;
 
+    match LiteratureRepository::initialize(ctx.vault.root()) {
+        Ok(repository) => {
+            if let Err(error) = repository.move_path(&from, &to) {
+                tracing::warn!(
+                    "Moved '{}' to '{}' but could not update literature paths: {}",
+                    from,
+                    to,
+                    error
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                "Moved '{}' to '{}' but literature database is unavailable: {}",
+                from,
+                to,
+                error
+            );
+        }
+    }
+
     // Update indexes: remove old path, register new path
     ctx.on_file_deleted(&from);
     let content = ctx
@@ -574,7 +630,9 @@ pub async fn read_css_snippet(
     name: String,
 ) -> Result<String, CommandError> {
     let ctx = state.get_vault_context(window.label())?;
-    ctx.vault.read_css_snippet(&name).map_err(CommandError::from)
+    ctx.vault
+        .read_css_snippet(&name)
+        .map_err(CommandError::from)
 }
 
 /// Write binary data (base64-encoded) to a file in the vault.
@@ -612,6 +670,55 @@ pub async fn read_binary_file(
         message: format!("Failed to read binary file '{}': {}", relative_path, e),
     })?;
     Ok(base64::engine::general_purpose::STANDARD.encode(data))
+}
+
+/// Import a PDF from outside the vault and register it in literature.db.
+#[tauri::command]
+pub async fn import_pdf(
+    state: State<'_, AppState>,
+    window: tauri::WebviewWindow,
+    source_absolute_path: String,
+    relative_dir: String,
+) -> Result<String, CommandError> {
+    let source_path = PathBuf::from(&source_absolute_path);
+    let is_pdf = source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("pdf"))
+        .unwrap_or(false);
+    if !is_pdf {
+        return Err(CommandError {
+            code: "INVALID_FILE_TYPE".into(),
+            message: "Only PDF files can be imported into the PDF workspace".into(),
+        });
+    }
+
+    let ctx = state.get_vault_context(window.label())?;
+    let relative_path = ctx
+        .vault
+        .import_external_file(&source_path, &relative_dir)
+        .map_err(CommandError::from)?;
+    match LiteratureRepository::initialize(ctx.vault.root()) {
+        Ok(repository) => {
+            if let Err(error) = repository.register_pdf(&relative_path) {
+                // File import is the primary operation. Keep the imported PDF
+                // readable even if the additive metadata index needs repair.
+                tracing::warn!(
+                    "PDF '{}' imported but could not be registered: {}",
+                    relative_path,
+                    error
+                );
+            }
+        }
+        Err(error) => {
+            tracing::warn!(
+                "PDF '{}' imported but literature database is unavailable: {}",
+                relative_path,
+                error
+            );
+        }
+    }
+    Ok(relative_path)
 }
 
 /// Reveal a file in the operating system file manager.
@@ -678,7 +785,10 @@ pub async fn open_in_default_app(
         let mut cmd = std::process::Command::new("cmd");
         // Strip \\?\ prefix and wrap path for paths containing spaces
         let display_path = abs_path.display().to_string();
-        let clean_path = display_path.strip_prefix(r"\\?\").unwrap_or(&display_path).to_string();
+        let clean_path = display_path
+            .strip_prefix(r"\\?\")
+            .unwrap_or(&display_path)
+            .to_string();
         cmd.args(["/C", "start", "", &clean_path]);
         cmd
     };

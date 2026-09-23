@@ -251,7 +251,12 @@ export const TabBar: Component<TabBarProps> = (props) => {
       entries.push({ separator: true });
       entries.push({ label: t("context.exportPdf"), onClick: () => props.onExportPdf?.(file.path) });
     }
-    if (props.onSetViewMode) {
+    if (
+      props.onSetViewMode &&
+      file.kind !== "pdf" &&
+      file.kind !== "image" &&
+      file.kind !== "document"
+    ) {
       entries.push({ separator: true });
       entries.push({
         label: t("context.readingView"),

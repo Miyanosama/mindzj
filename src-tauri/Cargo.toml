@@ -30,6 +30,7 @@ serde_json = "=1.0.149"
 
 # Async runtime
 tokio = { version = "=1.52.3", features = ["full"] }
+futures-util = "=0.3.31"
 
 # File system watching
 notify = "=7.0.0"
@@ -71,13 +72,10 @@ rand = "=0.8.6"
 # URL encoding for window params
 urlencoding = "=2.1.3"
 
-# Keyring (system credential storage for API keys)
-keyring = "=3.6.3"
-
 # HTTP client used by the AI provider proxy. Requests are issued from
 # the Tauri backend so local model servers do not receive browser CORS
 # preflight OPTIONS requests.
-reqwest = { version = "=0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+reqwest = { version = "=0.12.28", default-features = false, features = ["json", "multipart", "rustls-tls", "stream"] }
 
 # Base64 encoding/decoding (for binary file writes from frontend)
 base64 = "=0.22.1"
@@ -112,6 +110,7 @@ ctrlc = "=3.5.2"
 # `RegisterHotKey` (which `tauri-plugin-global-shortcut` uses) sits
 # ABOVE the driver hook table so it also loses the race.
 [target.'cfg(windows)'.dependencies]
+keyring = { version = "=3.6.3", features = ["windows-native"] }
 windows = { version = "=0.58.0", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -137,6 +136,12 @@ webview2-com = "=0.38.2"
 # `disable_webview2_browser_accelerator_keys` can resolve the right
 # trait impl.
 windows-core = "=0.61.2"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "=3.6.3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "=3.6.3", features = ["linux-native-sync-persistent", "crypto-rust"] }
 
 [features]
 default = []

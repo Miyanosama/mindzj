@@ -56,9 +56,9 @@ impl Vault {
     }
 
     fn rename_case_only(from_path: &Path, to_path: &Path) -> KernelResult<()> {
-        let parent = from_path.parent().ok_or_else(|| {
-            KernelError::InvalidFileName(from_path.display().to_string())
-        })?;
+        let parent = from_path
+            .parent()
+            .ok_or_else(|| KernelError::InvalidFileName(from_path.display().to_string()))?;
         let file_name = from_path
             .file_name()
             .and_then(|name| name.to_str())
@@ -107,9 +107,7 @@ impl Vault {
         }
 
         // Canonicalize to resolve symlinks and get absolute path
-        let root = root
-            .canonicalize()
-            .map_err(|e| KernelError::Io(e))?;
+        let root = root.canonicalize().map_err(|e| KernelError::Io(e))?;
 
         // Create .mindzj config directory with full structure
         let config_dir = root.join(VAULT_CONFIG_DIR);
@@ -199,9 +197,7 @@ impl Vault {
             let path = Path::new(relative);
             for component in path.components() {
                 if matches!(component, Component::ParentDir) {
-                    return Err(KernelError::PathTraversalDenied(
-                        relative.to_string(),
-                    ));
+                    return Err(KernelError::PathTraversalDenied(relative.to_string()));
                 }
             }
         }
@@ -219,9 +215,7 @@ impl Vault {
                     if let Some(file_name) = full_path.file_name() {
                         canonical_parent.join(file_name)
                     } else {
-                        return Err(KernelError::InvalidFileName(
-                            relative.to_string(),
-                        ));
+                        return Err(KernelError::InvalidFileName(relative.to_string()));
                     }
                 } else {
                     full_path.clone()
@@ -251,9 +245,7 @@ impl Vault {
             let path = Path::new(relative);
             for component in path.components() {
                 if matches!(component, Component::ParentDir) {
-                    return Err(KernelError::PathTraversalDenied(
-                        relative.to_string(),
-                    ));
+                    return Err(KernelError::PathTraversalDenied(relative.to_string()));
                 }
             }
         }
@@ -265,9 +257,7 @@ impl Vault {
                 if let Some(file_name) = full_path.file_name() {
                     canonical_parent.join(file_name)
                 } else {
-                    return Err(KernelError::InvalidFileName(
-                        relative.to_string(),
-                    ));
+                    return Err(KernelError::InvalidFileName(relative.to_string()));
                 }
             } else {
                 full_path.clone()
@@ -339,9 +329,7 @@ impl Vault {
         }
 
         let content = fs::read_to_string(&abs_path)?;
-        let modified = fs::metadata(&abs_path)?
-            .modified()?
-            .into();
+        let modified = fs::metadata(&abs_path)?.modified()?.into();
 
         // Compute SHA-256 hash for conflict detection
         let hash = Self::compute_hash(&content);
@@ -412,9 +400,9 @@ impl Vault {
 
         // Sort: directories first, then alphabetically
         entries.sort_by(|a, b| {
-            b.is_dir.cmp(&a.is_dir).then(
-                a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-            )
+            b.is_dir
+                .cmp(&a.is_dir)
+                .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
         });
 
         Ok(entries)
@@ -564,7 +552,10 @@ impl Vault {
         let sanitized_stem: String = stem
             .chars()
             .map(|c| {
-                if matches!(c, '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|') {
+                if matches!(
+                    c,
+                    '/' | '\\' | '\0' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
+                ) {
                     '-'
                 } else {
                     c
@@ -574,7 +565,9 @@ impl Vault {
             .trim_matches(|c: char| c.is_whitespace() || c == '.')
             .to_string();
         if sanitized_stem.is_empty() {
-            return Err(KernelError::InvalidFileName(source_absolute_path.to_string()));
+            return Err(KernelError::InvalidFileName(
+                source_absolute_path.to_string(),
+            ));
         }
         Self::validate_file_name(&sanitized_stem)?;
         let file_name = format!("{}.css", sanitized_stem);
@@ -607,7 +600,9 @@ impl Vault {
     pub fn write_theme(&self, bare_name: &str, content: &str) -> KernelResult<String> {
         let trimmed = bare_name.trim();
         if trimmed.is_empty() {
-            return Err(KernelError::InvalidFileName("Theme name cannot be empty".into()));
+            return Err(KernelError::InvalidFileName(
+                "Theme name cannot be empty".into(),
+            ));
         }
         // Strip any .css the caller may have tacked on, and re-append it
         // canonically. Keeps the on-disk filenames consistent.
@@ -637,11 +632,8 @@ impl Vault {
 
         for entry in &mut entries {
             if entry.is_dir {
-                let children = self.build_tree(
-                    &entry.relative_path,
-                    current_depth + 1,
-                    max_depth,
-                )?;
+                let children =
+                    self.build_tree(&entry.relative_path, current_depth + 1, max_depth)?;
                 entry.children = Some(children);
             }
         }
@@ -660,11 +652,7 @@ impl Vault {
     /// 2. fsync the temporary file to ensure data is on disk
     /// 3. Atomically rename the temp file to the target path
     /// 4. Create a snapshot of the previous version (if file existed)
-    pub fn write_file(
-        &self,
-        relative_path: &str,
-        content: &str,
-    ) -> KernelResult<FileContent> {
+    pub fn write_file(&self, relative_path: &str, content: &str) -> KernelResult<FileContent> {
         let abs_path = self.resolve_safe_path(relative_path)?;
 
         // Validate the file name
@@ -682,34 +670,24 @@ impl Vault {
         // Take snapshot of existing file before overwriting
         if abs_path.exists() {
             if let Err(e) = self.create_snapshot(relative_path) {
-                warn!(
-                    "Failed to create snapshot for '{}': {}",
-                    relative_path, e
-                );
+                warn!("Failed to create snapshot for '{}': {}", relative_path, e);
             }
         }
 
         // Acquire write lock for atomicity
-        let _lock = self
-            .write_lock
-            .write()
-            .map_err(|_| KernelError::Io(std::io::Error::new(
+        let _lock = self.write_lock.write().map_err(|_| {
+            KernelError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Write lock poisoned",
-            )))?;
+            ))
+        })?;
 
         // Step 1: Write to temporary file
         let tmp_name = format!(
             ".~{}.tmp",
-            abs_path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
+            abs_path.file_name().unwrap_or_default().to_string_lossy()
         );
-        let tmp_path = abs_path
-            .parent()
-            .unwrap_or(&self.root)
-            .join(&tmp_name);
+        let tmp_path = abs_path.parent().unwrap_or(&self.root).join(&tmp_name);
 
         let mut tmp_file = fs::File::create(&tmp_path)?;
         tmp_file.write_all(content.as_bytes())?;
@@ -750,13 +728,12 @@ impl Vault {
             }
         }
 
-        let _lock = self
-            .write_lock
-            .write()
-            .map_err(|_| KernelError::Io(std::io::Error::new(
+        let _lock = self.write_lock.write().map_err(|_| {
+            KernelError::Io(std::io::Error::new(
                 std::io::ErrorKind::Other,
                 "Write lock poisoned",
-            )))?;
+            ))
+        })?;
 
         let tmp_name = format!(
             ".~{}.tmp",
@@ -773,18 +750,109 @@ impl Vault {
         Ok(())
     }
 
-    /// Create a new file. Returns an error if the file already exists.
-    pub fn create_file(
+    /// Import an external file into a directory inside this vault.
+    ///
+    /// The source is streamed into a temporary file and then committed with
+    /// the same atomic rename strategy used by normal vault writes. Existing
+    /// files are never overwritten: `paper.pdf` becomes `paper (1).pdf`, etc.
+    pub fn import_external_file(
         &self,
-        relative_path: &str,
-        content: &str,
-    ) -> KernelResult<FileContent> {
+        source_path: &Path,
+        relative_dir: &str,
+    ) -> KernelResult<String> {
+        let source = source_path.canonicalize()?;
+        if !source.is_file() {
+            return Err(KernelError::FileNotFound(source_path.display().to_string()));
+        }
+
+        let original_name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| KernelError::InvalidFileName(source.display().to_string()))?;
+        Self::validate_file_name(original_name)?;
+
+        let destination_dir = if relative_dir.trim().is_empty() {
+            self.root.clone()
+        } else {
+            self.resolve_safe_path(relative_dir)?
+        };
+        if !destination_dir.exists() {
+            fs::create_dir_all(&destination_dir)?;
+        }
+        if !destination_dir.is_dir() {
+            return Err(KernelError::InvalidFileName(format!(
+                "Import destination '{}' is not a directory",
+                relative_dir
+            )));
+        }
+
+        let source_name = Path::new(original_name);
+        let stem = source_name
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("document");
+        let extension = source_name
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
+
+        let mut destination = destination_dir.join(original_name);
+        let mut counter = 1u32;
+        while destination.exists() {
+            let candidate = if extension.is_empty() {
+                format!("{} ({})", stem, counter)
+            } else {
+                format!("{} ({}).{}", stem, counter, extension)
+            };
+            Self::validate_file_name(&candidate)?;
+            destination = destination_dir.join(candidate);
+            counter += 1;
+        }
+
+        let destination_name = destination
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("imported-file");
+        let tmp_path = destination_dir.join(format!(
+            ".~{}.import-{}.tmp",
+            destination_name,
+            std::process::id()
+        ));
+
+        let _lock = self.write_lock.write().map_err(|_| {
+            KernelError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "Write lock poisoned",
+            ))
+        })?;
+
+        let mut source_file = fs::File::open(&source)?;
+        let mut temp_file = fs::File::create(&tmp_path)?;
+        if let Err(error) = std::io::copy(&mut source_file, &mut temp_file) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(KernelError::Io(error));
+        }
+        temp_file.sync_all()?;
+        if let Err(error) = Self::replace_with_temp(&tmp_path, &destination) {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(error);
+        }
+
+        let relative = destination
+            .strip_prefix(&self.root)
+            .map_err(|_| KernelError::PathTraversalDenied(destination.display().to_string()))?
+            .to_string_lossy()
+            .replace('\\', "/");
+        info!("External file imported: {}", relative);
+        Ok(relative)
+    }
+
+    /// Create a new file. Returns an error if the file already exists.
+    pub fn create_file(&self, relative_path: &str, content: &str) -> KernelResult<FileContent> {
         let abs_path = self.resolve_safe_path(relative_path)?;
 
         if abs_path.exists() {
-            return Err(KernelError::FileAlreadyExists(
-                relative_path.to_string(),
-            ));
+            return Err(KernelError::FileAlreadyExists(relative_path.to_string()));
         }
 
         self.write_file(relative_path, content)
@@ -819,19 +887,15 @@ impl Vault {
     }
 
     /// Rename/move a file within the vault.
-    pub fn rename_file(
-        &self,
-        from: &str,
-        to: &str,
-    ) -> KernelResult<()> {
+    pub fn rename_file(&self, from: &str, to: &str) -> KernelResult<()> {
         let from_abs = self.resolve_safe_path(from)?;
         let to_abs = self.resolve_safe_rename_target(to)?;
 
         if !from_abs.exists() {
             return Err(KernelError::FileNotFound(from.to_string()));
         }
-        let same_existing_entry = to_abs.exists()
-            && from_abs.canonicalize()? == to_abs.canonicalize()?;
+        let same_existing_entry =
+            to_abs.exists() && from_abs.canonicalize()? == to_abs.canonicalize()?;
         if to_abs.exists() && !same_existing_entry {
             return Err(KernelError::FileAlreadyExists(to.to_string()));
         }
@@ -875,9 +939,7 @@ impl Vault {
         let abs_path = self.resolve_safe_path(relative_path)?;
 
         if abs_path.exists() {
-            return Err(KernelError::FileAlreadyExists(
-                relative_path.to_string(),
-            ));
+            return Err(KernelError::FileAlreadyExists(relative_path.to_string()));
         }
 
         fs::create_dir_all(&abs_path)?;
@@ -886,11 +948,7 @@ impl Vault {
     }
 
     /// Delete a directory (must be empty unless recursive is true).
-    pub fn delete_dir(
-        &self,
-        relative_path: &str,
-        recursive: bool,
-    ) -> KernelResult<()> {
+    pub fn delete_dir(&self, relative_path: &str, recursive: bool) -> KernelResult<()> {
         let abs_path = self.resolve_safe_path(relative_path)?;
 
         if !abs_path.exists() || !abs_path.is_dir() {
@@ -898,9 +956,7 @@ impl Vault {
         }
 
         // Never allow deleting the vault root or config dir
-        if abs_path == self.root
-            || abs_path == self.root.join(VAULT_CONFIG_DIR)
-        {
+        if abs_path == self.root || abs_path == self.root.join(VAULT_CONFIG_DIR) {
             return Err(KernelError::PermissionDenied(
                 "Cannot delete vault root or config directory".to_string(),
             ));
@@ -912,7 +968,10 @@ impl Vault {
             fs::remove_dir(&abs_path)?;
         }
 
-        info!("Directory deleted: {} (recursive={})", relative_path, recursive);
+        info!(
+            "Directory deleted: {} (recursive={})",
+            relative_path, recursive
+        );
         Ok(())
     }
 
@@ -935,10 +994,7 @@ impl Vault {
         let safe_name = relative_path.replace('/', "__");
         let snapshot_name = format!("{}_{}", safe_name, timestamp);
 
-        let snapshots_dir = self
-            .root
-            .join(VAULT_CONFIG_DIR)
-            .join("snapshots");
+        let snapshots_dir = self.root.join(VAULT_CONFIG_DIR).join("snapshots");
         let snapshot_path = snapshots_dir.join(&snapshot_name);
 
         fs::write(&snapshot_path, &content)?;
@@ -950,11 +1006,7 @@ impl Vault {
     }
 
     /// Remove old snapshots beyond the maximum limit.
-    fn prune_snapshots(
-        &self,
-        safe_name_prefix: &str,
-        snapshots_dir: &Path,
-    ) -> KernelResult<()> {
+    fn prune_snapshots(&self, safe_name_prefix: &str, snapshots_dir: &Path) -> KernelResult<()> {
         let mut matching: Vec<PathBuf> = fs::read_dir(snapshots_dir)?
             .filter_map(|e| e.ok())
             .map(|e| e.path())
@@ -980,15 +1032,9 @@ impl Vault {
     }
 
     /// List all available snapshots for a file.
-    pub fn list_snapshots(
-        &self,
-        relative_path: &str,
-    ) -> KernelResult<Vec<String>> {
+    pub fn list_snapshots(&self, relative_path: &str) -> KernelResult<Vec<String>> {
         let safe_name = relative_path.replace('/', "__");
-        let snapshots_dir = self
-            .root
-            .join(VAULT_CONFIG_DIR)
-            .join("snapshots");
+        let snapshots_dir = self.root.join(VAULT_CONFIG_DIR).join("snapshots");
 
         if !snapshots_dir.exists() {
             return Ok(Vec::new());
@@ -1017,10 +1063,7 @@ impl Vault {
         relative_path: &str,
         snapshot_name: &str,
     ) -> KernelResult<FileContent> {
-        let snapshots_dir = self
-            .root
-            .join(VAULT_CONFIG_DIR)
-            .join("snapshots");
+        let snapshots_dir = self.root.join(VAULT_CONFIG_DIR).join("snapshots");
         let snapshot_path = snapshots_dir.join(snapshot_name);
 
         if !snapshot_path.exists() {
@@ -1033,9 +1076,7 @@ impl Vault {
         // Ensure snapshot is within the snapshots directory (prevent traversal)
         let canonical = snapshot_path.canonicalize()?;
         if !canonical.starts_with(snapshots_dir.canonicalize()?) {
-            return Err(KernelError::PathTraversalDenied(
-                snapshot_name.to_string(),
-            ));
+            return Err(KernelError::PathTraversalDenied(snapshot_name.to_string()));
         }
 
         let content = fs::read_to_string(&snapshot_path)?;
@@ -1083,7 +1124,10 @@ impl Vault {
         Ok(FileMetadata {
             relative_path: relative_path.to_string(),
             size: fs_meta.len(),
-            created: fs_meta.created().unwrap_or(std::time::SystemTime::UNIX_EPOCH).into(),
+            created: fs_meta
+                .created()
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+                .into(),
             modified: fs_meta.modified()?.into(),
             is_markdown,
             word_count,
@@ -1181,11 +1225,7 @@ mod tests {
         let entries: Vec<_> = fs::read_dir(tmp.path())
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .ends_with(".tmp")
-            })
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
             .collect();
 
         assert!(entries.is_empty(), "Temp files should be cleaned up");

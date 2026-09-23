@@ -295,10 +295,18 @@ pub struct AppSettings {
     pub image_wheel_invert: bool,
 }
 
-fn default_true() -> bool { true }
-fn default_attachment_folder() -> String { ".mindzj/images".to_string() }
-fn default_show_markdown_toolbar() -> bool { true }
-fn default_theme() -> String { "dark".to_string() }
+fn default_true() -> bool {
+    true
+}
+fn default_attachment_folder() -> String {
+    ".mindzj/images".to_string()
+}
+fn default_show_markdown_toolbar() -> bool {
+    true
+}
+fn default_theme() -> String {
+    "dark".to_string()
+}
 
 /// Accept both the historical JSON shapes and the new one:
 ///   - Legacy enum-style values serialized as `"Light"` / `"Dark"` /
@@ -336,14 +344,30 @@ fn normalize_theme(value: Option<String>) -> String {
 fn default_font_family() -> String {
     "\"Inter\", \"Segoe UI\", -apple-system, BlinkMacSystemFont, \"SF Pro Text\", \"PingFang SC\", \"Microsoft YaHei\", \"Noto Sans\", Ubuntu, Cantarell, sans-serif".to_string()
 }
-fn default_ai_voice_provider() -> String { "Grok".to_string() }
-fn default_ai_stt_model() -> String { "grok-stt".to_string() }
-fn default_ai_tts_voice() -> String { "eve".to_string() }
-fn default_ai_tts_language() -> String { "auto".to_string() }
-fn default_image_resize_options() -> String { "25%, 33%, 50%, 100%".to_string() }
-fn default_image_ctrl_click() -> String { "open-in-new-tab".to_string() }
-fn default_image_wheel_modifier() -> String { "Alt".to_string() }
-fn default_image_wheel_zoom_step() -> u32 { 20 }
+fn default_ai_voice_provider() -> String {
+    "Grok".to_string()
+}
+fn default_ai_stt_model() -> String {
+    "grok-stt".to_string()
+}
+fn default_ai_tts_voice() -> String {
+    "eve".to_string()
+}
+fn default_ai_tts_language() -> String {
+    "auto".to_string()
+}
+fn default_image_resize_options() -> String {
+    "25%, 33%, 50%, 100%".to_string()
+}
+fn default_image_ctrl_click() -> String {
+    "open-in-new-tab".to_string()
+}
+fn default_image_wheel_modifier() -> String {
+    "Alt".to_string()
+}
+fn default_image_wheel_zoom_step() -> u32 {
+    20
+}
 fn default_marker_colors() -> Vec<String> {
     vec![
         "#facc15".to_string(),
@@ -418,7 +442,9 @@ pub enum NewNoteLocation {
 }
 
 impl Default for NewNoteLocation {
-    fn default() -> Self { Self::VaultRoot }
+    fn default() -> Self {
+        Self::VaultRoot
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -556,8 +582,10 @@ pub struct AiProviderConfig {
     pub provider_type: AiProviderType,
     /// API endpoint (for example a local service URL or a remote compatible URL)
     pub endpoint: Option<String>,
-    /// API key stored in the current vault's `.mindzj/settings.json`.
-    #[serde(default)]
+    /// Legacy API key field. It is accepted when reading old settings so it can
+    /// be migrated to the operating-system credential store, but is never
+    /// serialized back to disk or returned to the webview.
+    #[serde(default, skip_serializing)]
     pub api_key: Option<String>,
     /// Whether this provider currently has a non-empty API key.
     pub has_api_key: bool,

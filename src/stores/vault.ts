@@ -28,7 +28,7 @@ export interface FileContent {
   content: string;
   modified: string;
   hash: string;
-  kind?: "text" | "image" | "document";
+  kind?: "text" | "image" | "document" | "pdf";
 }
 
 export interface FileMetadata {
@@ -299,7 +299,7 @@ function createVaultStore() {
 
   function openPreviewFile(
     relativePath: string,
-    kind: Extract<FileContent["kind"], "image" | "document">,
+    kind: Extract<FileContent["kind"], "image" | "document" | "pdf">,
   ): FileContent {
     const preview: FileContent = {
       path: relativePath,

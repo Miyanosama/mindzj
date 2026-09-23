@@ -17,6 +17,7 @@ import {
   type MindzjNodeMatch,
   type MindzjTextPathInput,
 } from "../utils/mindzjMindmap";
+import { aiProviderGateway } from "../services/ai/providerGateway";
 
 type ChatRole = "system" | "user" | "assistant" | "tool";
 
@@ -27,6 +28,16 @@ interface ChatMessage {
   tool_calls?: ToolCall[];
   tool_call_id?: string;
 }
+
+export interface AiChatInputMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+type AiStreamEvent = {
+  data: string;
+  done: boolean;
+};
 
 interface ToolCall {
   id: string;
@@ -130,7 +141,7 @@ const PROVIDER_DEFAULTS: Record<AiProviderType, AiProviderConfig> = {
   },
   Claude: {
     provider_type: "Claude",
-    display_name: "Claude",
+    display_name: "Anthropic",
     endpoint: "https://api.anthropic.com/v1",
     api_key: null,
     has_api_key: false,
@@ -227,7 +238,7 @@ function providerDisplayName(config: AiProviderConfig): string {
   if (providerType === "LMStudio") return "LM Studio";
   if (providerType === "Ollama") return "Ollama";
   if (providerType === "OpenAI") return "OpenAI";
-  if (providerType === "Claude") return "Claude";
+  if (providerType === "Claude") return "Anthropic";
   if (providerType === "Grok") return "Grok";
   if (providerType === "Gemini") return "Gemini";
   if (providerType === "DeepSeek") return "DeepSeek";
@@ -1485,9 +1496,7 @@ function authHeader(apiKey: string | null): Record<string, string> {
 
 async function postAiJson(url: string, headers: Record<string, string>, body: unknown) {
   try {
-    return await invoke<any>("ai_chat_completion", {
-      request: { url, headers, body },
-    });
+    return await aiProviderGateway.postJson<any>(url, headers, body);
   } catch (error) {
     throw new Error(formatAiProviderError(error));
   }
@@ -1495,9 +1504,7 @@ async function postAiJson(url: string, headers: Record<string, string>, body: un
 
 async function getAiJson(url: string, headers: Record<string, string>) {
   try {
-    return await invoke<any>("ai_get_json", {
-      request: { url, headers },
-    });
+    return await aiProviderGateway.getJson<any>(url, headers);
   } catch (error) {
     throw new Error(formatAiProviderError(error));
   }
@@ -1511,8 +1518,12 @@ async function postAiAudioTranscription(
   base64Data: string,
 ) {
   try {
-    return await invoke<any>("ai_transcribe_audio", {
-      request: { url, headers, fileName, mimeType, base64Data },
+    return await aiProviderGateway.transcribe<any>({
+      url,
+      headers,
+      fileName,
+      mimeType,
+      base64Data,
     });
   } catch (error) {
     throw new Error(formatAiProviderError(error));
@@ -1527,8 +1538,12 @@ async function postAiTextToSpeech(
   fileName: string,
 ): Promise<AiTextToSpeechResult> {
   try {
-    return await invoke<AiTextToSpeechResult>("ai_text_to_speech", {
-      request: { url, headers, body, outputDir, fileName },
+    return await aiProviderGateway.textToSpeech<AiTextToSpeechResult>({
+      url,
+      headers,
+      body,
+      outputDir,
+      fileName,
     });
   } catch (error) {
     throw new Error(formatAiProviderError(error));
@@ -1907,23 +1922,21 @@ async function runJsonFallback(content: string, context?: ToolExecutionContext):
 function createAiStore() {
   async function getApiKey(config: AiProviderConfig): Promise<string | null> {
     if (!providerNeedsRealKey(config.provider_type)) return null;
-    const value = config.api_key?.trim();
-    if (value) return value;
     const provider = providerStorageId(config);
-    const migrated = await invoke<string | null>("get_ai_api_key", { provider }).catch(() => null);
-    if (migrated?.trim()) {
-      await saveApiKey(provider, migrated);
-      return migrated.trim();
-    }
-    return null;
+    const value = await invoke<string | null>("get_ai_api_key", { provider }).catch(() => null);
+    return value?.trim() || null;
   }
 
   async function saveApiKey(provider: string, apiKey: string): Promise<void> {
     const value = apiKey.trim();
     const hasApiKey = value.length > 0;
+    await invoke("set_ai_api_key", {
+      provider,
+      apiKey: value || null,
+    });
     const updateConfig = (config: AiProviderConfig): AiProviderConfig =>
       configMatchesProvider(config, provider)
-        ? { ...config, api_key: value || null, has_api_key: hasApiKey }
+        ? { ...config, api_key: null, has_api_key: hasApiKey }
         : config;
     const current = settingsStore.settings();
     const nextProvider = current.ai_provider ? updateConfig(current.ai_provider) : current.ai_provider;
@@ -1947,14 +1960,144 @@ function createAiStore() {
     return aiProviderModelLabel(configuredProvider());
   }
 
+  function currentProviderLabel(): string {
+    const config = configuredProvider();
+    return config?.display_name?.trim() || config?.provider_type || "AI";
+  }
+
+  async function completeChat(messages: AiChatInputMessage[]): Promise<string> {
+    const config = configuredProvider();
+    if (!config) throw new Error("AI provider is not configured.");
+    if (!config.model.trim()) throw new Error("AI model is empty.");
+    if (!providerBaseUrl(config)) throw new Error("AI endpoint is empty.");
+    if (providerNeedsRealKey(config.provider_type) && !config.has_api_key) {
+      throw new Error("API key is required for this provider.");
+    }
+    const apiKey = await getApiKey(config);
+    if (providerNeedsRealKey(config.provider_type) && !apiKey) {
+      throw new Error("API key is required for this provider.");
+    }
+    const data = await chatCompletionRequest(config, messages, apiKey, false);
+    const content = String(data?.choices?.[0]?.message?.content ?? "").trim();
+    if (!content) throw new Error("AI provider returned an empty response.");
+    return content;
+  }
+
+  async function streamChat(
+    messages: AiChatInputMessage[],
+    onChunk: (content: string, fullMessage: string) => void,
+  ): Promise<string> {
+    const config = configuredProvider();
+    if (!config) throw new Error("AI provider is not configured.");
+    if (!config.model.trim()) throw new Error("AI model is empty.");
+    if (!providerBaseUrl(config)) throw new Error("AI endpoint is empty.");
+    if (providerNeedsRealKey(config.provider_type) && !config.has_api_key) {
+      throw new Error("API key is required for this provider.");
+    }
+    const apiKey = await getApiKey(config);
+    if (providerNeedsRealKey(config.provider_type) && !apiKey) {
+      throw new Error("API key is required for this provider.");
+    }
+
+    const family = inferProviderFamily(config);
+    let url: string;
+    let headers: Record<string, string>;
+    let body: Record<string, unknown>;
+    if (family === "anthropic") {
+      const converted = anthropicMessages(messages);
+      url = `${providerBaseUrl(config)}/messages`;
+      headers = {
+        "x-api-key": apiKey ?? "",
+        "anthropic-version": "2023-06-01",
+      };
+      body = {
+        model: config.model,
+        max_tokens: 8192,
+        stream: true,
+        messages: converted.messages,
+        ...(converted.system ? { system: converted.system } : {}),
+      };
+    } else if (family === "gemini") {
+      const converted = geminiMessages(messages);
+      url = `${providerBaseUrl(config)}/${geminiModelPath(config.model)}:streamGenerateContent?alt=sse`;
+      headers = { "x-goog-api-key": apiKey ?? "" };
+      body = converted;
+    } else {
+      url = `${providerBaseUrl(config)}/chat/completions`;
+      headers = authHeader(apiKey);
+      body = {
+        model: openAiCompatibleModelId(config),
+        messages,
+        stream: true,
+      };
+    }
+
+    let fullMessage = "";
+    let streamError: Error | null = null;
+    try {
+      await aiProviderGateway.streamJson<AiStreamEvent>(url, headers, body, (event) => {
+        if (event.done || !event.data || event.data === "[DONE]") return;
+        try {
+          const data = JSON.parse(event.data);
+          const providerError = data?.error?.message ?? data?.error;
+          if (providerError) {
+            streamError = new Error(String(providerError));
+            return;
+          }
+          let piece = "";
+          if (family === "anthropic") {
+            if (data?.type === "content_block_delta" && data?.delta?.type === "text_delta") {
+              piece = String(data.delta.text ?? "");
+            }
+          } else if (family === "gemini") {
+            piece = (data?.candidates?.[0]?.content?.parts ?? [])
+              .filter((part: any) => typeof part?.text === "string")
+              .map((part: any) => part.text)
+              .join("");
+          } else {
+            const content = data?.choices?.[0]?.delta?.content;
+            if (typeof content === "string") piece = content;
+            else if (Array.isArray(content)) {
+              piece = content
+                .filter((part: any) => part?.type === "text" && typeof part.text === "string")
+                .map((part: any) => part.text)
+                .join("");
+            }
+          }
+          if (!piece) return;
+          fullMessage += piece;
+          onChunk(piece, fullMessage);
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) streamError = error instanceof Error ? error : new Error(String(error));
+        }
+      });
+    } catch (error) {
+      throw new Error(formatAiProviderError(error));
+    }
+    if (streamError) throw streamError;
+    const result = fullMessage.trim();
+    if (!result) throw new Error("AI provider returned an empty response.");
+    return result;
+  }
+
   async function testConnection(config = configuredProvider()): Promise<AiConnectionTestResult> {
     if (!config) throw new Error("AI provider is not configured.");
     if (!providerBaseUrl(config)) throw new Error("AI endpoint is empty.");
 
-    const apiKey = await getApiKey(config);
     if (providerNeedsRealKey(config.provider_type)) {
       if (!config.model.trim()) throw new Error("AI model is empty.");
-      if (!config.has_api_key || !apiKey) throw new Error("API key is required for this provider.");
+      if (["OpenAI", "DeepSeek", "Claude", "ApiKeyLLM", "Custom"].includes(config.provider_type)) {
+        return invoke<AiConnectionTestResult>("test_ai_provider_connection", {
+          request: {
+            provider: providerStorageId(config),
+            providerType: config.provider_type,
+            endpoint: providerBaseUrl(config),
+            model: config.model.trim(),
+          },
+        });
+      }
+      const apiKey = await getApiKey(config);
+      if (!apiKey) throw new Error("API key is required for this provider.");
       const data = await chatCompletionRequest(
         config,
         [{ role: "user", content: "Reply with OK." }],
@@ -1965,6 +2108,7 @@ function createAiStore() {
       return { model: config.display_name || config.model, content: content || null };
     }
 
+    const apiKey = await getApiKey(config);
     const models = await listProviderModels(config, apiKey);
     const detectedModel = models[0] || config.model.trim();
     if (!detectedModel) throw new Error("AI provider returned no available models.");
@@ -2108,10 +2252,13 @@ function createAiStore() {
     defaultAiProviderConfig,
     isConfigured,
     currentModelLabel,
+    currentProviderLabel,
     saveApiKey,
     loadApiKey,
     testConnection,
     runInstruction,
+    completeChat,
+    streamChat,
     transcribeGrokAudio,
     synthesizeGrokSpeech,
   };

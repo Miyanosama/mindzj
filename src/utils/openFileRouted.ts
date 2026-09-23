@@ -54,6 +54,15 @@ export async function openFileRouted(relativePath: string): Promise<void> {
             return;
         }
 
+        case "pdf": {
+            try {
+                vaultStore.openPreviewFile(relativePath, "pdf");
+            } catch (e) {
+                console.error("[openFileRouted] openPreviewFile(pdf) failed:", e);
+            }
+            return;
+        }
+
         case "external": {
             // Delegate to the OS default app: Word/Writer for .doc,
             // Excel/Calc for .xlsx/.csv, Acrobat/Preview for .pdf,
