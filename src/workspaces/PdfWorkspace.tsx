@@ -23,16 +23,19 @@ import { aiStore } from "../stores/ai";
 import { displayName } from "../utils/displayName";
 import { toVaultAssetUrl } from "../utils/vaultPaths";
 import { t } from "../i18n";
-import { analyzePdfPage, type PdfPageAnalysis } from "../services/pdf/layout";
+import { analyzePdfPage, identifyPdfDocumentStructure, type PdfPageAnalysis } from "../services/pdf/layout";
 import {
     getPdfParagraphs,
     getPdfRecord,
+    getParagraphAnalyses,
     indexPdfDocument,
+    saveParagraphAnalysis,
     searchPdfDocument,
     type PdfParagraphRecord,
+    type ParagraphAnalysisRecord,
     type PdfSearchResult,
 } from "../services/pdf/literatureRepository";
-import { translateSelectedText } from "../services/pdf/paperAiService";
+import { summarizeParagraphs, translateSelectedText } from "../services/pdf/paperAiService";
 import { PdfAiChatPanel } from "../components/pdf/PdfAiChatPanel";
 
 let pdfModulePromise: Promise<typeof import("pdfjs-dist")> | null = null;
@@ -48,6 +51,10 @@ function loadPdfModule() {
 const MIN_ZOOM = 0.35;
 const MAX_ZOOM = 4;
 const ZOOM_STEP = 0.15;
+const MIN_AI_PANEL_WIDTH = 280;
+const MAX_AI_PANEL_WIDTH = 680;
+const DEFAULT_AI_PANEL_WIDTH = 380;
+const AI_PANEL_WIDTH_KEY = "mindzj-pdf-ai-panel-width";
 
 function clampZoom(value: number): number {
     return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
@@ -250,7 +257,20 @@ export const PdfWorkspace: Component<{
     const [showSearch, setShowSearch] = createSignal(false);
     const [activeResult, setActiveResult] = createSignal<PdfSearchResult | null>(null);
     const [showAiChat, setShowAiChat] = createSignal(false);
+    const [aiPanelWidth, setAiPanelWidth] = createSignal<number>((() => {
+        const stored = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY));
+        return Number.isFinite(stored) && stored >= MIN_AI_PANEL_WIDTH && stored <= MAX_AI_PANEL_WIDTH
+            ? stored
+            : DEFAULT_AI_PANEL_WIDTH;
+    })());
     const [paragraphs, setParagraphs] = createSignal<PdfParagraphRecord[]>([]);
+    const [paragraphSummaries, setParagraphSummaries] = createSignal<Record<string, string>>({});
+    const [paragraphAnalyses, setParagraphAnalyses] = createSignal<Record<string, ParagraphAnalysisRecord>>({});
+    const [documentStructure, setDocumentStructure] = createSignal({ title: null as string | null, abstract: null as string | null });
+    const [showSummaries, setShowSummaries] = createSignal(false);
+    const [summarizing, setSummarizing] = createSignal(false);
+    const [summaryError, setSummaryError] = createSignal("");
+    let summaryRun = 0;
     const [selectionPopup, setSelectionPopup] = createSignal<{ text: string; x: number; y: number } | null>(null);
     const [selectionTranslation, setSelectionTranslation] = createSignal<string | null>(null);
     const [translatingSelection, setTranslatingSelection] = createSignal(false);
@@ -294,6 +314,13 @@ export const PdfWorkspace: Component<{
         setSearchResults([]);
         setActiveResult(null);
         setParagraphs([]);
+        setParagraphSummaries({});
+        setParagraphAnalyses({});
+        summaryRun += 1;
+        setShowSummaries(false);
+        setSummarizing(false);
+        setSummaryError("");
+        setDocumentStructure({ title: null, abstract: null });
         setSelectionPopup(null);
         setSelectionTranslation(null);
         setError(null);
@@ -443,10 +470,20 @@ export const PdfWorkspace: Component<{
     ) {
         try {
             const record = await getPdfRecord(relativePath);
+            const firstAnalysis = await getPageAnalysis(pdf, 1);
+            if (generation !== loadGeneration) return;
+            setDocumentStructure(identifyPdfDocumentStructure([firstAnalysis]));
             if (record.parseStatus === "ready" && record.pageCount === pdf.numPages) {
                 if (generation === loadGeneration) {
                     setIndexState("ready");
-                    setParagraphs(await getPdfParagraphs(relativePath));
+                    const [loadedParagraphs, analyses] = await Promise.all([
+                        getPdfParagraphs(relativePath),
+                        getParagraphAnalyses(relativePath),
+                    ]);
+                    if (generation !== loadGeneration) return;
+                    setParagraphs(loadedParagraphs);
+                    setParagraphAnalyses(Object.fromEntries(analyses.map((analysis) => [analysis.paragraphId, analysis])));
+                    setParagraphSummaries(Object.fromEntries(analyses.filter((analysis) => analysis.summary.trim()).map((analysis) => [analysis.paragraphId, analysis.summary])));
                 }
                 return;
             }
@@ -459,14 +496,66 @@ export const PdfWorkspace: Component<{
                 setIndexProgress(number / pdf.numPages);
                 if (number % 3 === 0) await new Promise<void>((resolve) => setTimeout(resolve, 0));
             }
+            setDocumentStructure(identifyPdfDocumentStructure(pages));
             const summary = await indexPdfDocument(relativePath, pages);
             if (generation !== loadGeneration) return;
             setIndexState(summary.parseStatus === "requires_ocr" ? "requires_ocr" : "ready");
-            setParagraphs(await getPdfParagraphs(relativePath));
+            const [loadedParagraphs, analyses] = await Promise.all([
+                getPdfParagraphs(relativePath),
+                getParagraphAnalyses(relativePath),
+            ]);
+            if (generation !== loadGeneration) return;
+            setParagraphs(loadedParagraphs);
+            setParagraphAnalyses(Object.fromEntries(analyses.map((analysis) => [analysis.paragraphId, analysis])));
+            setParagraphSummaries(Object.fromEntries(analyses.filter((analysis) => analysis.summary.trim()).map((analysis) => [analysis.paragraphId, analysis.summary])));
         } catch (reason) {
             if (generation !== loadGeneration) return;
             console.error("[PdfWorkspace] failed to index PDF:", reason);
             setIndexState("failed");
+        }
+    }
+
+    async function generateSummaries() {
+        if (summarizing() || !aiStore.isConfigured()) return;
+        setShowSummaries(true);
+        setSummarizing(true);
+        setSummaryError("");
+        const run = ++summaryRun;
+        const path = props.filePath;
+        const provider = aiStore.currentProviderLabel();
+        const model = aiStore.currentModelLabel();
+        const currentParagraphs = paragraphs();
+        const currentSummaries = paragraphSummaries();
+        const currentAnalyses = paragraphAnalyses();
+        const generation = loadGeneration;
+        const missing = currentParagraphs.filter((paragraph) => !currentSummaries[paragraph.id]);
+        const context = JSON.stringify(documentStructure());
+        try {
+            for (let offset = 0; offset < missing.length; offset += 6) {
+                if (run !== summaryRun || generation !== loadGeneration) return;
+                const batch = missing.slice(offset, offset + 6);
+                const summaries = await summarizeParagraphs(batch, context);
+                if (run !== summaryRun || generation !== loadGeneration) return;
+                for (const paragraph of batch) {
+                    const summary = summaries[paragraph.id];
+                    const saved = await saveParagraphAnalysis(path, {
+                        paragraphId: paragraph.id,
+                        translation: currentAnalyses[paragraph.id]?.translation ?? "",
+                        summary,
+                        keyPoints: currentAnalyses[paragraph.id]?.keyPoints ?? [],
+                        provider,
+                        model,
+                        promptVersion: "paragraph-summary-v1",
+                    });
+                    if (run !== summaryRun || generation !== loadGeneration) return;
+                    setParagraphAnalyses((current) => ({ ...current, [paragraph.id]: saved }));
+                    setParagraphSummaries((current) => ({ ...current, [paragraph.id]: saved.summary }));
+                }
+            }
+        } catch (reason) {
+            if (run === summaryRun) setSummaryError(String(reason));
+        } finally {
+            if (run === summaryRun) setSummarizing(false);
         }
     }
 
@@ -475,8 +564,26 @@ export const PdfWorkspace: Component<{
         if (!pdf || !scrollRef) return;
         const page = await pdf.getPage(pageNumber());
         const natural = page.getViewport({ scale: 1 });
-        const availableWidth = Math.max(240, scrollRef.clientWidth - 56);
+        const availableWidth = Math.max(240, scrollRef.clientWidth - 56 - (showSummaries() ? 328 : 0));
         setZoom(clampZoom(availableWidth / natural.width));
+    }
+
+    function resizeAiPanel(event: PointerEvent) {
+        const startX = event.clientX;
+        const startWidth = aiPanelWidth();
+        const onMove = (moveEvent: PointerEvent) => {
+            const nextWidth = Math.max(MIN_AI_PANEL_WIDTH, Math.min(MAX_AI_PANEL_WIDTH, startWidth + startX - moveEvent.clientX));
+            setAiPanelWidth(nextWidth);
+            localStorage.setItem(AI_PANEL_WIDTH_KEY, String(Math.round(nextWidth)));
+        };
+        const onUp = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onUp);
+            document.body.classList.remove("mz-pdf-resizing-ai");
+        };
+        document.body.classList.add("mz-pdf-resizing-ai");
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onUp, { once: true });
     }
 
     function goToPage(next: number) {
@@ -636,6 +743,17 @@ export const PdfWorkspace: Component<{
                 <button style={toolbarButtonStyle()} title={t("context.showInExplorer")} onClick={() => void revealInFileManager()}>⌕</button>
             </header>
 
+            <div class="mz-pdf-analysis-toolbar">
+                <details><summary>{documentStructure().title ?? fileName()}</summary><p>{documentStructure().abstract ?? "未识别到摘要"}</p></details>
+                <Show when={aiStore.isConfigured()}>
+                    <button disabled={indexState() !== "ready" || summarizing()} title="将段落、论文标题和摘要发送到当前 AI 模型" onClick={() => void generateSummaries()}>{summaryError() ? "重试段落摘要" : "生成段落摘要"}</button>
+                    <Show when={summarizing()}><button onClick={() => { summaryRun += 1; setSummarizing(false); }}>暂停</button></Show>
+                    <label><input type="checkbox" checked={showSummaries()} onChange={(event) => setShowSummaries(event.currentTarget.checked)} />段落卡片</label>
+                    <span>{Object.keys(paragraphSummaries()).length}/{paragraphs().length}</span>
+                </Show>
+                <Show when={summaryError()}><span role="alert">{summaryError()}</span></Show>
+            </div>
+
             <div style={{ flex: "1", display: "flex", "min-height": "0", "min-width": "0" }}>
                 <div ref={scrollRef} class="mz-pdf-scroll" onMouseUp={handleTextSelection} onScroll={() => { updateContinuousPageNumber(); setSelectionPopup(null); setSelectionTranslation(null); }} style={{ flex: "1", "min-width": "0", "min-height": "0", overflow: "auto", padding: "28px", background: "color-mix(in srgb, var(--mz-bg-tertiary) 80%, #777 20%)" }}>
                     <Show when={!loading() && !error()} fallback={<div style={{ height: "100%", display: "flex", "align-items": "center", "justify-content": "center", color: error() ? "var(--mz-danger, #e06c75)" : "var(--mz-text-muted)", "font-size": "var(--mz-font-size-sm)", "white-space": "pre-wrap", "text-align": "center" }}>{error() ?? t("pdf.loading")}</div>}>
@@ -674,6 +792,27 @@ export const PdfWorkspace: Component<{
                     </Show>
                 </div>
 
+                <Show when={showSummaries() && aiStore.isConfigured()}>
+                    <aside class="mz-pdf-summary-rail">
+                        <header>段落摘要 <span>{Object.keys(paragraphSummaries()).length}/{paragraphs().length}</span></header>
+                        <div class="mz-pdf-summary-list">
+                            <For each={paragraphs().filter((paragraph) => paragraphSummaries()[paragraph.id])}>
+                                {(paragraph) => <button class="mz-pdf-summary-item" onClick={() => selectResult({
+                                    paragraphId: paragraph.id,
+                                    pageNumber: paragraph.pageNumber,
+                                    paragraphIndex: paragraph.paragraphIndex,
+                                    snippet: paragraph.text.slice(0, 120),
+                                    text: paragraph.text,
+                                    boxes: paragraph.boxes,
+                                })}>
+                                    <span>第 {paragraph.pageNumber} 页 · {paragraph.columnIndex === 1 ? "右栏" : "左栏"}</span>
+                                    <strong>{paragraphSummaries()[paragraph.id]}</strong>
+                                </button>}
+                            </For>
+                        </div>
+                    </aside>
+                </Show>
+
                 <Show when={showSearch()}>
                     <aside style={{ width: "290px", "flex-shrink": "0", display: "flex", "flex-direction": "column", background: "var(--mz-bg-secondary)", "border-left": "1px solid var(--mz-border)", overflow: "hidden" }}>
                         <div style={{ height: "38px", display: "flex", "align-items": "center", padding: "0 10px", "border-bottom": "1px solid var(--mz-border)", color: "var(--mz-text-secondary)", "font-size": "12px" }}>
@@ -693,11 +832,19 @@ export const PdfWorkspace: Component<{
                     </aside>
                 </Show>
                 <Show when={showAiChat()}>
+                    <div
+                        class="mz-pdf-ai-resize-handle"
+                        role="separator"
+                        aria-orientation="vertical"
+                        aria-label="调整论文 AI 面板宽度"
+                        onPointerDown={resizeAiPanel}
+                    />
                     <PdfAiChatPanel
                         relativePath={props.filePath}
                         title={fileName()}
                         paragraphs={paragraphs()}
                         onClose={() => setShowAiChat(false)}
+                        style={{ width: `${aiPanelWidth()}px`, "flex-basis": `${aiPanelWidth()}px` }}
                     />
                 </Show>
             </div>

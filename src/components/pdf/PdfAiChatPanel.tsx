@@ -33,6 +33,7 @@ export const PdfAiChatPanel: Component<{
     paragraphs: PdfParagraphRecord[];
     onContextStateChange?: (enabled: boolean) => void;
     onClose: () => void;
+    style?: import("solid-js").JSX.CSSProperties;
 }> = (props) => {
     let inputRef: HTMLTextAreaElement | undefined;
     let messageListRef: HTMLDivElement | undefined;
@@ -168,7 +169,7 @@ export const PdfAiChatPanel: Component<{
     }
 
     return (
-        <aside class="mz-pdf-ai-chat" classList={{ "is-dragging": dragging() }} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={handleDrop}>
+        <aside class="mz-pdf-ai-chat" style={props.style} classList={{ "is-dragging": dragging() }} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={handleDrop}>
             <header class="mz-pdf-ai-chat-header">
                 <div><strong>论文 AI</strong><small>{aiStore.currentModelLabel() || "未配置模型"}</small></div>
                 <button title="清空对话" onClick={() => void clearChat()}>清空</button>

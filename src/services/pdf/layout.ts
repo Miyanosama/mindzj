@@ -32,6 +32,13 @@ export interface PdfPageAnalysis {
     spans: PdfTextSpan[];
     paragraphs: PdfParagraph[];
     columnCount: number;
+    title: string | null;
+    abstract: string | null;
+}
+
+export interface PdfDocumentStructure {
+    title: string | null;
+    abstract: string | null;
 }
 
 export interface PdfTextItemInput {
@@ -151,7 +158,8 @@ function buildLines(spans: PdfTextSpan[]): TextLine[] {
         let segment: PdfTextSpan[] = [];
         for (const span of row) {
             const previous = segment.at(-1);
-            const largeGap = previous && span.x0 - previous.x1 > 0.065;
+            // A row can contain lines from both paper columns. Never join text across the gutter.
+            const largeGap = previous && span.x0 - previous.x1 > 0.035;
             if (largeGap && segment.length) {
                 lines.push(makeLine(segment));
                 segment = [];
@@ -184,7 +192,7 @@ function assignColumns(lines: TextLine[]): number {
     const right = candidates.filter((line) => line.x0 >= 0.46);
     const leftEdge = left.length ? Math.max(...left.map((line) => line.x1)) : 1;
     const rightEdge = right.length ? Math.min(...right.map((line) => line.x0)) : 0;
-    const dualColumn = left.length >= 2 && right.length >= 2 && leftEdge < rightEdge + 0.04;
+    const dualColumn = left.length >= 2 && right.length >= 2 && leftEdge < rightEdge - 0.06;
 
     for (const line of lines) {
         if (!dualColumn) {
@@ -205,19 +213,14 @@ function orderLines(lines: TextLine[], columnCount: number): TextLine[] {
 
     const columnLines = lines.filter((line) => line.columnIndex >= 0);
     const bodyTop = Math.min(...columnLines.map((line) => line.y0));
-    const bodyBottom = Math.max(...columnLines.map((line) => line.y1));
     const fullWidth = lines.filter((line) => line.columnIndex < 0);
     const prefix = fullWidth.filter((line) => line.y0 < bodyTop).sort((a, b) => a.y0 - b.y0);
     const suffix = fullWidth.filter((line) => line.y0 >= bodyTop).sort((a, b) => a.y0 - b.y0);
     const left = columnLines.filter((line) => line.columnIndex === 0).sort((a, b) => a.y0 - b.y0);
     const right = columnLines.filter((line) => line.columnIndex === 1).sort((a, b) => a.y0 - b.y0);
 
-    // Full-width text below the body is normally a footer. A rare full-width
-    // heading inside the body remains ordered after both columns; its own box
-    // is still accurate and can be corrected by a future structure model.
-    const footer = suffix.filter((line) => line.y0 >= bodyBottom - 0.01);
-    const middle = suffix.filter((line) => line.y0 < bodyBottom - 0.01);
-    return [...prefix, ...middle, ...left, ...right, ...footer];
+    // Preserve the conventional title/abstract block, then read each column top-to-bottom.
+    return [...prefix, ...left, ...suffix, ...right];
 }
 
 function endsParagraph(line: TextLine, columnWidth: number): boolean {
@@ -268,10 +271,16 @@ function buildParagraphs(lines: TextLine[]): PdfParagraph[] {
     const groups: TextLine[][] = [];
     let current: TextLine[] = [];
 
+    const columnLines = new Map<number, TextLine[]>();
+    for (const line of lines) {
+        const entries = columnLines.get(line.columnIndex) ?? [];
+        entries.push(line);
+        columnLines.set(line.columnIndex, entries);
+    }
     for (const line of lines) {
         const previous = current.at(-1);
-        const columnLines = lines.filter((entry) => entry.columnIndex === line.columnIndex);
-        const columnWidth = Math.max(0.2, Math.max(...columnLines.map((entry) => entry.x1)) - Math.min(...columnLines.map((entry) => entry.x0)));
+        const inColumn = columnLines.get(line.columnIndex) ?? [];
+        const columnWidth = Math.max(0.2, Math.max(...inColumn.map((entry) => entry.x1)) - Math.min(...inColumn.map((entry) => entry.x0)));
         const verticalGap = previous ? line.y0 - previous.y1 : 0;
         const fontChange = previous
             ? Math.abs(line.fontSize - previous.fontSize) > Math.max(0.002, bodyFontSize * 0.2)
@@ -331,6 +340,20 @@ export function analyzePdfTextItems(
     const columnCount = assignColumns(lines);
     const orderedLines = orderLines(lines, columnCount);
     const paragraphs = buildParagraphs(orderedLines);
+    const bodyFontSize = median(lines.map((line) => line.fontSize));
+    const prominent = [...lines]
+        .filter((line) => line.text.length >= 8 && line.text.length <= 240)
+        .sort((a, b) => b.fontSize - a.fontSize || a.y0 - b.y0);
+    const titleLine = prominent.find((line) => line.y0 < 0.24 && line.fontSize >= bodyFontSize * 1.25);
+    const inlineAbstract = paragraphs.find((paragraph) => /^\s*(abstract|摘要)\b[\s:：]*\S/i.test(paragraph.text));
+    const abstractStart = paragraphs.findIndex((paragraph) => /^\s*(abstract|摘要)\s*[:：]?\s*$/i.test(paragraph.text));
+    const abstract = abstractStart >= 0
+        ? paragraphs.slice(abstractStart + 1, abstractStart + 3)
+            .filter((paragraph) => paragraph.box.y0 < 0.4)
+            .map((paragraph) => paragraph.text)
+            .join(" ") || null
+        : inlineAbstract?.text
+            .replace(/^\s*(abstract|摘要)\b[\s:：]*/i, "") ?? null;
     return {
         pageNumber,
         width: pageWidth,
@@ -339,7 +362,24 @@ export function analyzePdfTextItems(
         spans,
         paragraphs,
         columnCount,
+        title: titleLine?.text.trim() ?? null,
+        abstract: abstract?.trim() || null,
     };
+}
+
+export function identifyPdfDocumentStructure(pages: readonly PdfPageAnalysis[]): PdfDocumentStructure {
+    const firstPage = pages.find((page) => page.pageNumber === 1) ?? pages[0];
+    if (!firstPage) return { title: null, abstract: null };
+    const title = firstPage.title
+        ?? [...firstPage.paragraphs]
+            .filter((paragraph) => paragraph.box.y0 < 0.3 && paragraph.text.length >= 8 && paragraph.text.length <= 240)
+            .sort((a, b) => a.box.y0 - b.box.y0)[0]?.text
+        ?? null;
+    const abstract = firstPage.abstract
+        ?? firstPage.paragraphs.find((paragraph) => /^\s*(abstract|摘要)\b/i.test(paragraph.text))?.text
+            .replace(/^\s*(abstract|摘要)\s*[:：]?\s*/i, "")
+        ?? null;
+    return { title: title?.trim() || null, abstract: abstract?.trim() || null };
 }
 
 export async function analyzePdfPage(

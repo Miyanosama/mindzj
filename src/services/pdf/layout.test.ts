@@ -45,4 +45,15 @@ describe("analyzePdfTextItems", () => {
         ]);
         expect(analysis.text).toContain("electrochemical");
     });
+
+    it("recognizes a prominent title and labeled abstract", () => {
+        const analysis = analyzePdfTextItems(1, PAGE_WIDTH, PAGE_HEIGHT, [
+            item("A Study of Reliable Systems", 90, 30, 420, 20),
+            item("Abstract", 50, 100, 60, 12),
+            item("We present a reliable method.", 50, 120, 430),
+        ]);
+        expect(analysis.title).toBe("A Study of Reliable Systems");
+        expect(analysis.abstract).toContain("reliable method");
+        expect(analysis.abstract).not.toMatch(/^Abstract/i);
+    });
 });

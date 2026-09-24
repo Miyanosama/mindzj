@@ -37,6 +37,21 @@ export interface PdfParagraphRecord {
     boxes: PdfBox[];
 }
 
+export interface ParagraphAnalysisRecord {
+    paragraphId: string;
+    paperId: string;
+    pageNumber: number;
+    paragraphIndex: number;
+    sourceHash: string;
+    translation: string;
+    summary: string;
+    keyPoints: { label: string; evidence: { startOffset: number; endOffset: number; quote: string }[] }[];
+    provider: string;
+    model: string;
+    promptVersion: string;
+    updatedAt: string;
+}
+
 export interface PaperReference {
     paragraphId?: string;
     pageNumber?: number;
@@ -92,6 +107,17 @@ export function searchPdfDocument(
 
 export function getPdfParagraphs(relativePath: string): Promise<PdfParagraphRecord[]> {
     return invoke("get_pdf_paragraphs", { relativePath });
+}
+
+export function getParagraphAnalyses(relativePath: string): Promise<ParagraphAnalysisRecord[]> {
+    return invoke("get_paragraph_analyses", { relativePath });
+}
+
+export function saveParagraphAnalysis(
+    relativePath: string,
+    analysis: Pick<ParagraphAnalysisRecord, "paragraphId" | "translation" | "summary" | "keyPoints" | "provider" | "model" | "promptVersion">,
+): Promise<ParagraphAnalysisRecord> {
+    return invoke("save_paragraph_analysis", { relativePath, analysis });
 }
 
 export function getPaperChatSession(relativePath: string): Promise<PaperChatSession> {
