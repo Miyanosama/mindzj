@@ -55,6 +55,7 @@ import {
     createHighlightRegex,
     createItalicRegex,
 } from "../../utils/markdownInline";
+import { isMarkdownTableDelimiterRow } from "../../utils/markdownTable";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML renderer
@@ -399,7 +400,7 @@ function markdownToHtml(md: string, ctx: RenderContext): string {
         if (
             line.includes("|") &&
             i + 1 < lines.length &&
-            /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/.test(lines[i + 1])
+            isMarkdownTableDelimiterRow(lines[i + 1])
         ) {
             closeList();
             const tableLines: string[] = [];
